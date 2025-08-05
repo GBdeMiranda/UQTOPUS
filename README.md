@@ -7,7 +7,6 @@ OpenUQFOAM is a Python framework for uncertainty quantification (UQ) studies wit
 - **Parameter Sampling**: Latin Hypercube Sampling (LHS), random sampling, and grid sampling methods
 - **Template Management**: Jinja2-based templating for OpenFOAM parameter files
 - **Parallel Execution**: Built-in support for parallel simulation workflows
-- **Results Analysis**: Statistical analysis and visualization of simulation outputs
 
 ## Installation
 
@@ -44,25 +43,6 @@ OpenUQFOAM is a Python framework for uncertainty quantification (UQ) studies wit
    ```bash
    source /opt/openfoam9/etc/bashrc  # Adjust path as needed
    ```
-
-## Usage Example
-
-```python
-import sys
-sys.path.append('src')
-
-from uq_runner import run_uq_study, generate_samples, analyze_results
-import numpy as np
-
-# Define parameter ranges
-param_ranges = {
-    'porosity': [0.1, 0.9],
-    'permeability': [1e-12, 1e-10],
-    'residual_saturation': [0.05, 0.25]
-}
-
-
-```
 
 ## Directory Structure
 
