@@ -1,12 +1,13 @@
-import subprocess
 import os
-
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from functools import partial
+import multiprocessing as mp
+from tqdm import tqdm
 
 import numpy as np
 import re
-import pandas as pd
 import yaml
+from fluidfoam import readmesh, readvector, readscalar  # XXX Change to fluidfoam reading strategy?
+
 
 def read_openfoam_field(file_path):
     """
@@ -66,122 +67,137 @@ def read_openfoam_field(file_path):
 def parse_openfoam_case(case_dir, variables, time_dirs=None):
     """
     Parses the OpenFOAM case directory structure and reads all field data.
-        **Note: The default list of variables is too expensive for large samples.**
-
+    
     Parameters:
         case_dir (str): Path to the root directory of the OpenFOAM case.
         variables (list): List of field names to read.
-        time_dirs (list or str, optional): List of time directories to read. If None, reads all time directories.
+        time_dirs (list or str, optional): List of time directories to read.
         
     Returns:
-        pd.DataFrame: Pandas DataFrame with the field data, where each column is a variable 
-            and each row is a time step. Each cell contains an array with the field data.
+        xr.Dataset: Dataset with variables as data variables and time as coordinate.
     """
-    data = {}
-
-    # Iterate over time directories, e.g. '50', '100', '200', ...
+    import xarray as xr
+    
+    # Get time directories
     if time_dirs is None:
-        time_dirs = sorted([d for d in os.listdir(case_dir) if d.isdigit()], key=lambda x: int(x))
+        time_dirs = sorted([d for d in os.listdir(case_dir) if d.isdigit()], key=lambda x: float(x))
     else:
         if type(time_dirs) == str:
             time_dirs = [time_dirs]
         time_dirs = [str(t) for t in time_dirs]
-
+    
+    # Store all data
+    data_vars = {}
+    times = [float(t) for t in time_dirs]
+    
+    # Read all data first
+    all_data = {}
     for time_dir in time_dirs:
-        
         time_path = os.path.join(case_dir, time_dir)
-
-        data[time_dir] = {}
-
-        # Iterate over field/var files in the time directory, e.g. 'U', 'p', 'S', ...
+        all_data[time_dir] = {}
+        
         for field_file in variables:
             field_path = os.path.join(time_path, field_file)
             try:
-                data[time_dir][field_file] = read_openfoam_field(field_path)
-                # print(f"Read {field_file} from {time_dir}")
+                all_data[time_dir][field_file] = read_openfoam_field(field_path)
             except Exception as e:
                 print(f"Error reading {field_file} in {time_dir}: {e}")
-
-    # Find the maximum number of elements in the data
-    max_elements = max([len(data[time_dir][field]) for time_dir in data for field in data[time_dir]])
     
-    for time_dir in data:
-        for field in data[time_dir]:
-            if len(data[time_dir][field]) == 1:
-                data[time_dir][field] = np.repeat(data[time_dir][field], max_elements)
-
-    # Convert to DataFrame
-    data = pd.DataFrame(data)
-    data = data.transpose()
-    data.index = data.index.astype(int)
+    # Handle uniform fields
+    max_elements = max([len(all_data[t][f]) for t in all_data for f in all_data[t] if f in all_data[t]])
     
-    return data
-
-
-
-def run_simulation(params, experiment_config, verbose=True):
-    """
-    Runs an OpenFOAM simulation with the given parameters.
-
-    Parameters:
-        params (dict): Dictionary containing the parameters for the simulation.
-        experiment_config (dict): Configuration dictionary containing experiment details.
-    """
-
-    new_dir = "../experiments/" + experiment_config['experiment']['name']
-    base_dir = experiment_config['experiment']['base_case_dir']
-
-    try:
-        if not os.path.exists(new_dir):
-            os.makedirs(new_dir)
-        else:
-            if verbose:
-                print(" -- The directory already exists. Files will be overwritten. --")
-            
-        result = subprocess.run(
-            ["cp", "-a", f'{base_dir}/.', new_dir],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        print(result.stdout)
-    except subprocess.CalledProcessError as e:
-        print("Error copying the files:", e.stderr)
-
-    env = Environment(
-        loader=FileSystemLoader(base_dir),
-        trim_blocks=True,
-        lstrip_blocks=True
-    )
-
-    for param_path, value in params.items():
-        path_parts = param_path.split('/')
-        if len(path_parts) < 2:
-            raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder/filename/paramname' format.")
-        param = path_parts[-1]
-        template_path = os.path.join(*path_parts[:-1])
-
-        template = env.get_template(template_path) # Location of the template file with foam parameters
+    for time_dir in all_data:
+        for field in all_data[time_dir]:
+            if len(all_data[time_dir][field]) == 1:
+                all_data[time_dir][field] = np.repeat(all_data[time_dir][field], max_elements, axis=0)
+    
+    # Create xarray data variables
+    for var in variables:
+        # Stack time data for this variable
+        var_data = []
+        for time_dir in time_dirs:
+            if var in all_data[time_dir]:
+                var_data.append(all_data[time_dir][var])
         
-        output = template.render({param: value}, undefined=StrictUndefined)
+        if var_data:
+            var_array = np.stack(var_data, axis=0)
+            
+            # Create appropriate dimensions based on shape
+            if var_array.ndim == 2:
+                dims = ['time', 'cell']
+            elif var_array.ndim == 3:
+                dims = ['time', 'cell', 'component']
+            else:
+                dims = ['time'] + [f'dim_{i}' for i in range(1, var_array.ndim)]
+            
+            data_vars[var] = xr.DataArray(var_array, dims=dims)
+    
+    
+    x, y, z = readmesh(case_dir, verbose=False)
+    
+    ds = xr.Dataset(
+        data_vars, 
+        coords={
+            'time': times,
+            'x': ('cell', x),
+            'y': ('cell', y),
+            'z': ('cell', z)
+        }
+    )
+    
+    return ds
 
-        # Overwrite the template file with the new values
-        with open(os.path.join(new_dir, template_path), 'w') as f:
-            f.write(output)
 
-    try:
-        current_dir = os.getcwd()
-        os.chdir(new_dir)
-        result = subprocess.run(
-            [f"./{experiment_config['solver']}"],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        print(result.stdout)
-        os.chdir(current_dir)
-    except subprocess.CalledProcessError as e:
-        print("Error running the script:", e.stderr)
+
+
+def read_uq_experiment(case_dir, variables, n_samples, time_dirs=None, nthreads=4):
+    """
+    Parses the OpenFOAM case directory structure and reads all field data.
+    
+    Parameters:
+        case_dir (str): Path to the root directory of the OpenFOAM case.
+        variables (list): List of field names to read.
+        n_samples (int): Number of samples to read.
+        time_dirs (list or str, optional): List of time directories to read.
+        nthreads (int): Number of parallel jobs.
+        
+    Returns:
+        xr.Dataset: Dataset with sample, time, and cell dimensions.
+    """
+    import xarray as xr
+    from functools import partial
+    from multiprocessing import Pool
+    from tqdm import tqdm
+    
+    datasets = []
+    sample_ids = []
+    
+    with mp.get_context('spawn').Pool(nthreads) as pool:
+        results = list(tqdm(
+            pool.imap(
+                partial(
+                    parse_openfoam_case,
+                    variables=variables,
+                    time_dirs=time_dirs
+                ),
+                [f'{case_dir}/sample_{i:03d}' for i in range(n_samples)],
+            ),
+            total=n_samples,
+            desc="Processing cases", 
+            unit="case",
+            mininterval=1.0
+        ))
+    
+    # Collect datasets with sample indices
+    for i, ds in enumerate(results):
+        datasets.append(ds)
+        sample_ids.append(i)
+    
+    # Concatenate along sample dimension
+    combined_ds = xr.concat(datasets, dim='sample')
+    combined_ds = combined_ds.assign_coords(sample=sample_ids)
+    
+    return combined_ds
 
 
 

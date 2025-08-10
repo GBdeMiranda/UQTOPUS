@@ -2,38 +2,38 @@
 UQ Runner for OpenFOAM Studies
 
 Main orchestration logic for uncertainty quantification studies.
-Based on the original working implementation with configuration support.
 """
 import os
+import subprocess
 import numpy as np
-import pandas as pd     
 from tqdm import tqdm
-from multiprocessing import Pool
+import multiprocessing as mp
 from functools import partial
 
-from openfoam_tools import run_simulation, load_config, read_openfoam_field
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-def model(X, Params):
+from pyDOE3 import lhs
+
+from openfoam_tools import load_config
+
+def uq_simulation(X, Params):
     """
-    Function to run openFOAM simulation for an experimental design (ED) defined 
+    Function to run openFOAM simulations for an experimental design (ED) defined 
     by a table of input parameters. The function creates a directory for each sample (row) in the ED.
     The execution happens for each sample in the ED and the outputs are saved in
-    '{experiment_name}/outputs'. 
-    In general, this is a previous step before training an emulator.
+    '{experiment_name}'. 
 
-    `Training an emulator will be a separate step to provide flexibility.`
     Parameters:
         X(ndarray)
             N_rv-column matrix with sampled values of the input parameters (N_rv = len(Params['model_parameters']): number of random variables )
-            X[:,i] (i=0,1,...,N_in-1): Input parameters
+            X[:, i] (i=0,1,...,N_in-1): Input parameters
 
         Params (dict)
             Dictionary containing information about the input and output parameters of the model.
-            'base_case_dir': Path to the base case directory
-            'experiment_name': Path to the experiment folder (default: 'temp')
-            'model_parameters': List of input parameters
+            'experiment': Name of the experiment/folder (default: 'temp')
+            'parameter_ranges': Dictionary defining the ranges for each parameter
             'nthreads': Number of threads to be used in the simulation (default: 1)
-            'vector_variables': Dictionary of vector variables if used (default: {})
+            'solver': Name of the script-solver to be used. The same as defined in the OpenFOAM template case
     """
 
 
@@ -41,26 +41,21 @@ def model(X, Params):
     ## Input parameters validation ###############################################################################
     for k in Params.keys():
         if k not in [
-            'experiment',
-            'parameter_ranges',
-            'nthreads',
-            'model_parameters',
+            'experiment', 'parameter_ranges',
+            'nthreads', 'solver',
             'theModel' # parameter from uqpylab, it is not used here
         ]:
             raise Exception(f"Unknown key '{k}' in Params")
     for k in Params['experiment'].keys():
-        if k not in ['name', 'solver', 'base_case_dir']:
+        if k not in ['experiment', 'base_case_dir', 'name']:
             raise Exception(f"Unknown key '{k}' in Params['experiment']")
 
-    keys = [k.split('/')[-1] for k in Params['parameter_ranges'].keys()] if 'parameter_ranges' in Params else None
-
     base_case_dir = Params['experiment']['base_case_dir'] if 'base_case_dir' in Params['experiment'] else None
-    exp_name = Params['experiment']['name'] if 'name' in Params['experiment'] else 'temp'
-    solver_config = Params['solver_config'] if 'solver_config' in Params else None
-    nthreads = Params['nthreads'] if 'nthreads' in Params else 1
+    solver = Params['solver'] if 'solver' in Params else None
+    keys = list(Params['parameter_ranges'].keys()) if 'parameter_ranges' in Params else None
 
-    if base_case_dir is None or keys is None or solver_config is None:
-        raise Exception("The parameters 'base_case_dir', 'model_parameters', and 'solver_config' must be provided as arguments in Params")
+    if keys is None or solver is None or base_case_dir is None:
+        raise Exception("The parameters 'base_case_dir', 'solver', and 'parameter_ranges' must be provided as arguments in Params")
     else:
         if not os.path.exists(base_case_dir):
             raise ValueError('The "base_case_dir" path passed as parameter does not exist')
@@ -68,9 +63,13 @@ def model(X, Params):
             try:
                 keys = list(keys)
             except:
-                raise ValueError('The parameter "model_parameters" is not a list or cannot be converted to a list')
+                raise ValueError('The parameter "parameter_ranges" should be a dict with valid inputs')
         if len(keys) != X.shape[1]:
-            raise ValueError('The number of keys must be equal to the number of the input columns in the experimental design')
+            raise ValueError('The number of keys passed must be equal to the number of the input columns in the experimental design')
+
+
+    nthreads = Params['nthreads'] if 'nthreads' in Params else 1
+    exp_name = Params['experiment']['name'] if 'name' in Params['experiment'] else 'temp'
     ##############################################################################################################
 
     
@@ -78,12 +77,11 @@ def model(X, Params):
     ## Sample generation #########################################################################################
     process_func = partial(
         _process_simulation,
-        exp_name=exp_name,
-        solver_config=solver_config
+        exp_config=Params
     )
 
     iparams = list(enumerate([ dict(zip(keys, x)) for x in X ]))
-    with Pool(nthreads) as pool:
+    with mp.get_context('spawn').Pool(nthreads) as pool:
         for _ in tqdm(
             pool.imap_unordered(process_func, iparams),
             total=len(iparams), 
@@ -98,7 +96,7 @@ def model(X, Params):
     return None
 
 
-def _process_simulation(param_data, experiment_config):
+def _process_simulation(param_data, exp_config, verbose=False):
     """
     Process a single simulation (helper function for multiprocessing).
     
@@ -106,18 +104,18 @@ def _process_simulation(param_data, experiment_config):
         param_data ((index, parameters_dict)): Tuple containing the sample index and parameters dictionary.
         base_case_dir (str): Path to base case directory
         exp_name (str): Experiment name
-        solver_config (dict): Solver configuration
+        exp_config (dict): Solver configuration
     """
     i, params = param_data
-    exp_name = experiment_config['experiment']['name']
+    exp_name = exp_config['experiment']['name']
     experiment_name = f"{exp_name}/sample_{i:03d}"
-    experiment_config['experiment']['name'] = experiment_name
-    # print(experiment_config)
+    exp_config['experiment']['name'] = experiment_name
+    
     try:
         run_simulation(
             params=params,
-            experiment_config=experiment_config,
-            verbose=False
+            exp_config=exp_config,
+            verbose=verbose
         )
     except Exception as e:
         print(f"Error in sample {i}: {e}")
@@ -128,8 +126,8 @@ def _process_simulation(param_data, experiment_config):
 
 def generate_samples(n_samples, param_ranges, method='lhs', seed=None):
     """Generate parameter samples for UQ study."""
-    # TODO: Modify to use always pydoe2 for sampling and choose all experimental designs
-
+    from pyDOE3 import fullfact, pbdesign, bbdesign, ccdesign
+    
     if seed is not None:
         np.random.seed(seed)
     
@@ -137,24 +135,26 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None):
     n_params = len(param_names)
     
     if method == 'lhs':
-        try:
-            from pyDOE2 import lhs
-            unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin')
-        except ImportError:
-            print("Warning: pyDOE2 not available, using random sampling")
-            unit_samples = np.random.random((n_samples, n_params))
+        unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin')
     elif method == 'random':
         unit_samples = np.random.random((n_samples, n_params))
-    elif method == 'grid':
+    elif method == 'grid' or method == 'fullfact':
         n_levels = int(np.ceil(n_samples ** (1/n_params)))
-        axes = [np.linspace(0, 1, n_levels) for _ in range(n_params)]
-        grid = np.meshgrid(*axes)
-        unit_samples = np.column_stack([g.ravel() for g in grid])
+        unit_samples = fullfact([n_levels] * n_params) / (n_levels - 1)
+        unit_samples = unit_samples[:n_samples]
+    elif method == 'plackett_burman':
+        unit_samples = (pbdesign(n_params) + 1) / 2
+        unit_samples = unit_samples[:n_samples]
+    elif method == 'box_behnken':
+        unit_samples = (bbdesign(n_params) + 1) / 2
+        unit_samples = unit_samples[:n_samples]
+    elif method == 'central_composite':
+        unit_samples = (ccdesign(n_params) + 1) / 2
+        unit_samples = np.clip(unit_samples, 0, 1)
         unit_samples = unit_samples[:n_samples]
     else:
-        raise ValueError(f"Unknown sampling method: {method}")
+        raise ValueError(f"Unknown sampling method: {method}. Available methods: 'lhs', 'random', 'grid', 'fullfact', 'plackett_burman', 'box_behnken', 'central_composite'")
     
-    # Scale to parameter ranges
     samples = np.zeros_like(unit_samples)
     for i, param_name in enumerate(param_names):
         min_val, max_val = param_ranges[param_name]
@@ -164,9 +164,77 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None):
 
 
 
-def run_uq_study(config_file, n_samples):
+
+def run_simulation(params, exp_config, verbose=False):
     """
-    Standalone function to run UQ study (alternative to UQPyLab interface).
+    Runs an OpenFOAM simulation with the given parameters.
+
+    Parameters:
+        params (dict): Dictionary containing the parameters for the simulation.
+        exp_config (dict): Configuration dictionary containing experiment details.
+    """
+
+    new_dir = "../experiments/" + exp_config['experiment']['name']
+    base_dir = exp_config['experiment']['base_case_dir']
+
+    try:
+        if not os.path.exists(new_dir):
+            os.makedirs(new_dir)
+        else:
+            if verbose:
+                print(" -- The directory already exists. Files will be overwritten. --")
+            
+        result = subprocess.run(
+            ["rsync", "-av", "--delete", f'{base_dir}/', new_dir + '/'],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        if verbose:
+            print(result.stdout)
+    except subprocess.CalledProcessError as e:
+        print("Error copying the files:", e.stderr)
+
+    env = Environment(
+        loader=FileSystemLoader(base_dir),
+        trim_blocks=True,
+        lstrip_blocks=True
+    )
+
+    for param_path, value in params.items():
+        path_parts = param_path.split('/')
+        if len(path_parts) < 2:
+            raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder/filename/paramname' format.")
+        param = path_parts[-1]
+        template_path = os.path.join(*path_parts[:-1])
+
+        template = env.get_template(template_path) # Location of the template file with foam parameters
+        
+        output = template.render({param: value}, undefined=StrictUndefined)
+
+        # Overwrite the template file with the new values
+        with open(os.path.join(new_dir, template_path), 'w') as f:
+            f.write(output)
+
+    try:
+        current_dir = os.getcwd()
+        os.chdir(new_dir)
+        result = subprocess.run(
+            [f"./{exp_config['solver']}"],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        if verbose:
+            print(result.stdout)
+        os.chdir(current_dir)
+    except subprocess.CalledProcessError as e:
+        print("Error running the script:", e.stderr)
+
+
+def run_uq_study(config_file, n_samples, verbose=False):
+    """
+    Standalone function to run UQ study for scalar parameters.
     """
     config = load_config(config_file)
 
@@ -189,11 +257,11 @@ def run_uq_study(config_file, n_samples):
 
     process_func = partial(
         _process_simulation,
-        experiment_config=config
+        exp_config=config
     )
 
     iparams = list(enumerate([ dict(zip(keys, x)) for x in X ]))
-    with Pool(nthreads) as pool:
+    with mp.get_context('spawn').Pool(nthreads) as pool:
         for _ in tqdm(
             pool.imap_unordered(process_func, iparams),
             total=len(iparams), 
@@ -202,5 +270,6 @@ def run_uq_study(config_file, n_samples):
         ):
             pass
 
-    print(f"UQ study completed. Results saved in 'experiments/{config['experiment']['name']}' folder")
+    if verbose:
+        print(f"UQ study completed. Results saved in 'experiments/{config['experiment']['name']}' folder")
     return None
