@@ -24,16 +24,13 @@ RAS
 
     printCoeffs     on;
 
-    SpalartAllmarasCoeffs
+    kEpsilonCoeffs
     {
-        sigmaNut   {{sigmaNut}};
-        kappa      {{kappa}};
-        Cb1        {{Cb1}};
-        Cb2        0.622;
-        Cv1        {{Cv1}};
-        Cw2        0.3;
-        Cw3        2.0;
-        Cw1        (Cb1/kappa^2 + (1 + Cb2)/sigmaNut);
+        Cmu        {{Cmu}};
+        C1         {{C1}};
+        C2         {{C2}};
+        sigmaK     {{sigmaK}};
+        sigmaEps   {{sigmaEps}};
     }
 }
 

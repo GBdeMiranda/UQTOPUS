@@ -93,8 +93,6 @@ def uq_simulation(X, Params):
 
     print(f"Simulation executed successfully. Files saved in 'experiments/{exp_name}' folder")
 
-    return
-
 
 def _process_simulation(param_data, exp_config, verbose=False):
     """

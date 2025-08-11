@@ -8,7 +8,7 @@ Ultimately, this project aims to enable the usage of OpenFOAM simulator to perfo
 
 ## Features
 
-- **Parameter Sampling**: Latin Hypercube Sampling (LHS), random sampling, and grid sampling methods
+- **Parameter Sampling**: Latin Hypercube Sampling (LHS).
 - **Template Management**: Jinja2-based templating for OpenFOAM parameter files
 - **Parallel Execution**: Built-in support for parallel simulation workflows
 
@@ -33,19 +33,8 @@ For other systems, visit: https://openfoam.org/download/
 
 ### Requirements
 
-- Python 3.8+
+- Python 3.9+
 - OpenFOAM 9+ (for running actual simulations)
-- Required Python packages:
-
-  ```
-  numpy
-  pandas
-  jinja2
-  pyyaml
-  matplotlib
-  tqdm
-  pyDOE2 (optional, for LHS sampling)
-  ```
 
 ### Setup
 
@@ -83,11 +72,46 @@ OpenUQFOAM/
 │       ├── sample_001/       # OpenFOAM case for sample 1
 │       ├── sample_002/       # OpenFOAM case for sample 2
 │       ...
-├── scripts/                  # Auxiliary scripts
-│   └── run_solver.sh         # OpenFOAM solver execution script
 ├── config.yaml               # Main configuration file
 └── README.md                 # This file
 ```
+
+## Configuring a template case
+
+1) Add Jinja2 placeholders in OpenFOAM dictionaries where parameters vary.
+   - Example (constant/transportProperties):
+     ```foam
+     transportModel  {{ transportModel | default('Newtonian') }};
+     nu              [0 2 -1 0 0 0 0] {{ nu | default(1e-5) }};
+     ```
+   - Example with conditionals (constant/turbulenceProperties):
+     ```foam
+     simulationType RAS;
+     RAS
+     {
+       RASModel      {% if turbulence == "kEpsilon" %}kEpsilon{% else %}kOmegaSST{% endif %};
+       turbulence    on;
+       printCoeffs   on;
+     }
+     ```
+   - Jinja tips:
+     - Use default: {{ var|default(1.0) }}
+     - Use rounding: {{ diameter|round(5) }}
+     - Use conditionals/loops for switching models or patch sets.
+
+2) Provide a run script in the template root (e.g., templates/base_case/Allrun). Keep it non-templated.
+   - Minimal example (mesh + solver):
+      ```bash
+      cd ${0%/*} || exit 1    # Run from this directory
+
+      # Source tutorial run functions
+      . $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+      runApplication blockMesh
+      runApplication $(getApplication)
+      ```
+
+3) Place the template under `templates` directory to ensure organization with standard OpenFOAM layout (0/, constant/, system/). The UQ runner will render the Jinja placeholders per sample and invoke your run script.
 
 ## Examples
 

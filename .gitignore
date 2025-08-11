@@ -44,3 +44,4 @@ experiments/*
 
 .env
 .vscode/
+*/__pycache__/

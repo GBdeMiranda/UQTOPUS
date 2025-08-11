@@ -1,0 +1,9 @@
+experiment:
+  name: myFirstSurrogate
+  base_case_dir: ../templates/cavity
+parameter_ranges:
+  constant__momentumTransport__nuInf: [0.5, 15]
+  constant__momentumTransport__m: [0.1, 0.5]
+  constant__momentumTransport__n: [0.3, 0.2]
+solver: Allrun
+nthreads: 10
