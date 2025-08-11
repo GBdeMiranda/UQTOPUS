@@ -1,6 +1,7 @@
 # OpenUQFOAM
 
-OpenUQFOAM is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM computational fluid dynamics simulations. The framework provides a streamlined approach to parameter sampling, simulation execution, and statistical analysis for CFD applications.
+OpenUQFOAM is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM CFD simulations. 
+It automates sampling, case templating, execution, and results analysis to enable reproducible and scalable UQ experiments. The pipeline is designed to be extensible, including hooks for surrogate modeling and custom post-processing around OpenFOAM runs.
 
 Ultimately, this project aims to enable the usage of OpenFOAM simulator to perform efficient and automated uncertainty quantification studies aided by surrogate modeling techniques wrapping the OpenFOAM simulation process.
 
@@ -8,9 +9,13 @@ Ultimately, this project aims to enable the usage of OpenFOAM simulator to perfo
 
 ## Features
 
-- **Parameter Sampling**: Latin Hypercube Sampling (LHS).
-- **Template Management**: Jinja2-based templating for OpenFOAM parameter files
-- **Parallel Execution**: Built-in support for parallel simulation workflows
+- End-to-end UQ workflow: sample → render cases → run → collect → analyze
+- OpenFOAM-native integration: Jinja2-templated dictionaries and Allrun orchestration
+- Parallel execution built-in support for sampled scenarios
+- Reproducible experiment management under experiments/[study]/sample_NNN
+- Result parsing and basic statistics with CSV/NumPy-friendly outputs
+- Pluggable sampling strategies (LHS included) and easy extension
+- Extensible hooks for surrogate modeling and custom post-processing
 
 ## Installation
 
