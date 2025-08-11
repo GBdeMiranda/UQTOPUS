@@ -14,7 +14,7 @@ Ultimately, this project aims to enable the usage of OpenFOAM simulator to perfo
 - Parallel execution built-in support for sampled scenarios
 - Reproducible experiment management under experiments/[study]/sample_NNN
 - Result parsing and basic statistics with CSV/NumPy-friendly outputs
-- Pluggable sampling strategies (LHS included) and easy extension
+- Pluggable sampling strategies and easy extension
 - Extensible hooks for surrogate modeling and custom post-processing
 
 ## Installation
