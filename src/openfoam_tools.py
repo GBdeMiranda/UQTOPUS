@@ -32,7 +32,7 @@ def read_openfoam_field(file_path):
 
             # Considering 1D domain
             data = re.findall(r"[-+]?\d*\.\d+|\d+", field_info)
-            values = np.array([float(data[0])])
+            values = np.array([float(d) for d in data])
             return values
             
         # Non uniform has the number of elements in the data block
@@ -80,12 +80,12 @@ def parse_openfoam_case(case_dir, variables, time_dirs=None):
     
     # Get time directories
     if time_dirs is None:
-        time_dirs = sorted([d for d in os.listdir(case_dir) if d.isdigit()], key=lambda x: float(x))
+        time_dirs = sorted([d for d in os.listdir(case_dir) if d.split('.')[0].isdigit()], key=lambda x: float(x))
     else:
         if type(time_dirs) == str:
             time_dirs = [time_dirs]
         time_dirs = [str(t) for t in time_dirs]
-    
+
     # Store all data
     data_vars = {}
     times = [float(t) for t in time_dirs]
@@ -103,31 +103,33 @@ def parse_openfoam_case(case_dir, variables, time_dirs=None):
             except Exception as e:
                 print(f"Error reading {field_file} in {time_dir}: {e}")
     
-    # Handle uniform fields
-    max_elements = max([len(all_data[t][f]) for t in all_data for f in all_data[t] if f in all_data[t]])
-    
+    # Handling uniform fields (single value in file)
+    max_elements = max([len(all_data[t][f]) for t in all_data for f in all_data[t]])
     for time_dir in all_data:
         for field in all_data[time_dir]:
-            if len(all_data[time_dir][field]) == 1:
-                all_data[time_dir][field] = np.repeat(all_data[time_dir][field], max_elements, axis=0)
-    
+            n_elements = len(all_data[time_dir][field])
+            if n_elements < max_elements:
+                all_data[time_dir][field] = np.repeat(all_data[time_dir][field], max_elements, axis=0).reshape(max_elements, -1)
+                if n_elements == 1:
+                    all_data[time_dir][field] = all_data[time_dir][field].flatten()
+
+
     # Create xarray data variables
     for var in variables:
         # Stack time data for this variable
         var_data = []
         for time_dir in time_dirs:
-            if var in all_data[time_dir]:
-                var_data.append(all_data[time_dir][var])
+            var_data.append(all_data[time_dir][var])
         
         if var_data:
             var_array = np.stack(var_data, axis=0)
             
             # Create appropriate dimensions based on shape
-            if var_array.ndim == 2:
+            if var_array.ndim == 2: # (time, cell) or (time, cell, component)
                 dims = ['time', 'cell']
             elif var_array.ndim == 3:
                 dims = ['time', 'cell', 'component']
-            else:
+            else: # higher dimensions
                 dims = ['time'] + [f'dim_{i}' for i in range(1, var_array.ndim)]
             
             data_vars[var] = xr.DataArray(var_array, dims=dims)

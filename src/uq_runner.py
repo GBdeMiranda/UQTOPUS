@@ -93,7 +93,7 @@ def uq_simulation(X, Params):
 
     print(f"Simulation executed successfully. Files saved in 'experiments/{exp_name}' folder")
 
-    return None
+    return
 
 
 def _process_simulation(param_data, exp_config, verbose=False):
@@ -201,16 +201,25 @@ def run_simulation(params, exp_config, verbose=False):
         lstrip_blocks=True
     )
 
+    # Create a new dict with template paths with their respective params
+    paths_n_vars = {}
     for param_path, value in params.items():
-        path_parts = param_path.split('/')
+        path_parts = param_path.split('__')
         if len(path_parts) < 2:
-            raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder/filename/paramname' format.")
+            if len(path_parts) < 2:
+                raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder__filename__paramname' format.")
         param = path_parts[-1]
+
         template_path = os.path.join(*path_parts[:-1])
 
-        template = env.get_template(template_path) # Location of the template file with foam parameters
-        
-        output = template.render({param: value}, undefined=StrictUndefined)
+        if template_path not in paths_n_vars:
+            paths_n_vars[template_path] = {}
+        paths_n_vars[template_path][param] = value
+
+    # For each template path render all its params at once
+    for template_path, params_dict in paths_n_vars.items():
+        template = env.get_template(template_path)
+        output = template.render(params_dict, undefined=StrictUndefined)
 
         # Overwrite the template file with the new values
         with open(os.path.join(new_dir, template_path), 'w') as f:

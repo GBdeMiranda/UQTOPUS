@@ -1,0 +1,40 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  9
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      momentumTransport;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+simulationType  RAS;
+
+RAS
+{
+    model           kEpsilon;
+
+    turbulence      on;
+
+    printCoeffs     on;
+
+    SpalartAllmarasCoeffs
+    {
+        sigmaNut   {{sigmaNut}};
+        kappa      {{kappa}};
+        Cb1        {{Cb1}};
+        Cb2        0.622;
+        Cv1        {{Cv1}};
+        Cw2        0.3;
+        Cw3        2.0;
+        Cw1        (Cb1/kappa^2 + (1 + Cb2)/sigmaNut);
+    }
+}
+
+// ************************************************************************* //

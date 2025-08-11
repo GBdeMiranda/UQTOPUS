@@ -42,6 +42,5 @@ ipython_config.py
 
 experiments/*
 
-# git rm -r --cached simulator/experiments
-
+.env
 .vscode/
