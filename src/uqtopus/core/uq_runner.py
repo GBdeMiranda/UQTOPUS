@@ -12,8 +12,8 @@ from functools import partial
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from openfoam_tools import load_config
-from sampling import generate_samples
+from ..utils import load_config
+from .sampling import generate_samples
 
 def uq_simulation(X, Params):
     """

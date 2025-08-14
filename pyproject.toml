@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=63.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uqtopus"
+version = "0.1.0"
+description = "Uncertainty Quantification Toolbox for OpenFOAM and Python Unified Simulation workflows"
+readme = "README.md"
+authors = [
+    { name = "Gabriel Brandao de Miranda", email = "gabrielbrandaodemiranda@gmail.com" },
+]
+
+dependencies = [
+    "xarray",
+    "jinja2",
+    "fluidfoam",
+    "numpy",
+    "scipy",
+    "pyDOE3",
+    "tqdm",
+    "pyyaml"
+]

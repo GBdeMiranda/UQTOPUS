@@ -40,8 +40,29 @@ ipython_config.py
 
 **/data/
 
+# my folder for uq experiments
 experiments/*
 
 .env
 .vscode/
-*/__pycache__/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Python cache/bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/

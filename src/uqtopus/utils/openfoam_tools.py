@@ -57,8 +57,8 @@ def parse_openfoam_case(case_dir:str, variables:list[str], time_dirs:list[str]|s
         for fname, field in time_data.items():
             if field.ndim == 1 and field.shape[0] == 1:     # scalar uniform field
                 time_data[fname] = np.stack([field] * max_elements, axis=0).flatten()
-            elif field.ndim == 2 and field.shape[1] == 1:   # vector uniform field
-                time_data[fname] = np.stack([field.T[0]] * max_elements, axis=0).reshape(max_elements, -1)
+            elif field.ndim == 2 and (field.shape[0] == 1 or field.shape[1] == 1):   # vector uniform field
+                time_data[fname] = np.stack([field[0]] * max_elements, axis=0).reshape(max_elements, -1)
 
     # Create xarray data variables
     for var in variables:
