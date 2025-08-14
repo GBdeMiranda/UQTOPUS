@@ -4,17 +4,16 @@ UQ Runner for OpenFOAM Studies
 Main orchestration logic for uncertainty quantification studies.
 """
 import os
+from pathlib import Path
 import subprocess
-import numpy as np
 from tqdm import tqdm
 import multiprocessing as mp
 from functools import partial
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-from pyDOE3 import lhs
-
 from openfoam_tools import load_config
+from sampling import generate_samples
 
 def uq_simulation(X, Params):
     """
@@ -129,18 +128,18 @@ def run_simulation(params, exp_config, verbose=False):
         exp_config (dict): Configuration dictionary containing experiment details.
     """
 
-    new_dir = "../experiments/" + exp_config['experiment']['name']
-    base_dir = exp_config['experiment']['base_case_dir']
+    new_dir = Path("..") / "experiments" / exp_config['experiment']['name']
+    base_dir = Path(exp_config['experiment']['base_case_dir'])
 
     try:
-        if not os.path.exists(new_dir):
-            os.makedirs(new_dir)
+        if not new_dir.exists():
+            new_dir.mkdir(parents=True)
         else:
             if verbose:
                 print(" -- The directory already exists. Files will be overwritten. --")
             
         result = subprocess.run(
-            ["rsync", "-av", "--delete", f'{base_dir}/', new_dir + '/'],
+            ["rsync", "-av", "--delete", f'{str(base_dir)}/', f'{str(new_dir)}/'],
             check=True,
             capture_output=True,
             text=True
@@ -165,7 +164,7 @@ def run_simulation(params, exp_config, verbose=False):
                 raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder__filename__paramname' format.")
         param = path_parts[-1]
 
-        template_path = os.path.join(*path_parts[:-1])
+        template_path = str(Path(*path_parts[:-1]))
 
         if template_path not in paths_n_vars:
             paths_n_vars[template_path] = {}
@@ -173,12 +172,12 @@ def run_simulation(params, exp_config, verbose=False):
 
     # For each template path render all its params at once
     for template_path, params_dict in paths_n_vars.items():
-        template = env.get_template(template_path)
+        template = env.get_template(str(template_path))
         output = template.render(params_dict, undefined=StrictUndefined)
 
-        # Overwrite the template file with the new values
-        with open(os.path.join(new_dir, template_path), 'w') as f:
-            f.write(output)
+        target_path = new_dir / template_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)  # ensure dirs exist
+        target_path.write_text(output)
 
     try:
         result = subprocess.run(
@@ -236,42 +235,3 @@ def run_uq_study(config_file, n_samples, verbose=False):
     if verbose:
         print(f"UQ study completed. Results saved in 'experiments/{config['experiment']['name']}' folder")
     return None
-
-
-def generate_samples(n_samples, param_ranges, method='lhs', seed=None):
-    """Generate parameter samples for UQ study."""
-    from pyDOE3 import fullfact, pbdesign, bbdesign, ccdesign
-    
-    if seed is not None:
-        np.random.seed(seed)
-    
-    param_names = list(param_ranges.keys())
-    n_params = len(param_names)
-    
-    if method == 'lhs':
-        unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin')
-    elif method == 'random':
-        unit_samples = np.random.random((n_samples, n_params))
-    elif method == 'grid' or method == 'fullfact':
-        n_levels = int(np.ceil(n_samples ** (1/n_params)))
-        unit_samples = fullfact([n_levels] * n_params) / (n_levels - 1)
-        unit_samples = unit_samples[:n_samples]
-    elif method == 'plackett_burman':
-        unit_samples = (pbdesign(n_params) + 1) / 2
-        unit_samples = unit_samples[:n_samples]
-    elif method == 'box_behnken':
-        unit_samples = (bbdesign(n_params) + 1) / 2
-        unit_samples = unit_samples[:n_samples]
-    elif method == 'central_composite':
-        unit_samples = (ccdesign(n_params) + 1) / 2
-        unit_samples = np.clip(unit_samples, 0, 1)
-        unit_samples = unit_samples[:n_samples]
-    else:
-        raise ValueError(f"Unknown sampling method: {method}. Available methods: 'lhs', 'random', 'grid', 'fullfact', 'plackett_burman', 'box_behnken', 'central_composite'")
-    
-    samples = np.zeros_like(unit_samples)
-    for i, param_name in enumerate(param_names):
-        min_val, max_val = param_ranges[param_name]
-        samples[:, i] = min_val + unit_samples[:, i] * (max_val - min_val)
-    
-    return samples
