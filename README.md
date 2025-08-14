@@ -71,12 +71,8 @@ For other systems, visit: https://openfoam.org/download/
 
 ```
 UQTOPUS/
-├── src/                      # Main Python modules
-│   └── uqtopus/
-│       ├── __init__.py
-
-│       ├── openfoam_tools.py     # OpenFOAM I/O
-│       └── uq_runner.py          # Main UQ orchestration logic
+├── src/                      # Python package
+│   └── uqtopus/              
 ├── templates/                # OpenFOAM case templates
 │   └── base_case/            # Base case with Jinja2 placeholders
 │       ├── constant/
