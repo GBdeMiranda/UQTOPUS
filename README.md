@@ -1,5 +1,3 @@
-# UQTOPUS
-
 <div align="center">
   <img src="assets/uqtopus.png" alt="UQTOPUS Logo" width="128" height="128">
   <h1>UQTOPUS (v0.1)</h1>
