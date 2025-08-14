@@ -1,6 +1,14 @@
-# OpenUQFOAM
+# UQTOPUS
 
-OpenUQFOAM is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM CFD simulations. 
+<div align="center">
+  <img src="assets/uqtopus.png" alt="UQTOPUS Logo" width="128" height="128">
+  <h1>UQTOPUS (v0.1)</h1>
+  <p><b>U</b>ncertainty <b>Q</b>uantification <b>T</b>oolbox for <b>O</b>penFOAM and <b>P</b>ython <b>U</b>nified <b>S</b>imulation workflows<br></p>
+
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+</div>
+
+UQTOPUS is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM CFD simulations 
 It automates sampling, case templating, execution, and results analysis to enable reproducible and scalable UQ experiments. The pipeline is designed to be extensible, including hooks for surrogate modeling and custom post-processing around OpenFOAM runs.
 
 Ultimately, this project aims to enable the usage of OpenFOAM simulator to perform efficient and automated uncertainty quantification studies aided by surrogate modeling techniques wrapping the OpenFOAM simulation process.
@@ -45,8 +53,8 @@ For other systems, visit: https://openfoam.org/download/
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/GBdeMiranda/OpenUQFOAM.git
-   cd OpenUQFOAM
+   git clone https://github.com/GBdeMiranda/UQTOPUS.git
+   cd UQTOPUS
    ```
 
 2. Install Python dependencies:
@@ -62,10 +70,13 @@ For other systems, visit: https://openfoam.org/download/
 ## Directory Structure
 
 ```
-OpenUQFOAM/
+UQTOPUS/
 ├── src/                      # Main Python modules
-│   ├── openfoam_tools.py     # OpenFOAM I/O
-│   └── uq_runner.py          # Main UQ orchestration logic
+│   └── uqtopus/
+│       ├── __init__.py
+
+│       ├── openfoam_tools.py     # OpenFOAM I/O
+│       └── uq_runner.py          # Main UQ orchestration logic
 ├── templates/                # OpenFOAM case templates
 │   └── base_case/            # Base case with Jinja2 placeholders
 │       ├── constant/

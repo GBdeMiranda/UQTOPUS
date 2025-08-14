@@ -119,7 +119,7 @@ def _process_simulation(param_data, exp_config, verbose=False):
 
 
 
-def run_simulation(params, exp_config, verbose=False):
+def run_simulation(params, exp_config, experiment_folder=None, verbose=False):
     """
     Runs an OpenFOAM simulation with the given parameters.
 
