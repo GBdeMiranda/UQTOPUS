@@ -2,6 +2,6 @@ experiment:
   name: myFirstUQStudy
   base_case_dir: ../templates/scalarTransportFoam
 parameter_ranges:
-  constant__transportProperties__DT: [0.01, 0.1]
+  constant__transportProperties__DT: [0.01, 0.3]
 solver: Allrun
-nthreads: 4
+nthreads: 10
