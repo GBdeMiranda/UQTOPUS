@@ -163,9 +163,10 @@ def load_config(config_path:str="config.yaml"):
         return {}
 
 
-# ========================
-# LEGACY FUNCTIONS =======
-# ========================
+# ===================================
+# LEGACY FUNCTIONS ==================
+# Not imported to the main module ===
+# ===================================
 
 import re
 

@@ -15,6 +15,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from ..utils import load_config
 from .sampling import generate_samples
 
+_DESTINATION_FOLDER = Path('experiments')   # Default destination folder for experiments
+
 def uq_simulation(X, Params):
     """
     Function to run openFOAM simulations for an experimental design (ED) defined 
@@ -46,11 +48,11 @@ def uq_simulation(X, Params):
         ]:
             raise Exception(f"Unknown key '{k}' in Params")
     for k in Params['experiment'].keys():
-        if k not in ['experiment', 'base_case_dir', 'name']:
+        if k not in ['experiment', 'base_case_dir', 'name', 'destination_folder']:
             raise Exception(f"Unknown key '{k}' in Params['experiment']")
 
-    base_case_dir = Params['experiment']['base_case_dir'] if 'base_case_dir' in Params['experiment'] else None
-    solver = Params['solver'] if 'solver' in Params else None
+    base_case_dir = Params['experiment'].get('base_case_dir', None)
+    solver = Params.get('solver', None)
     keys = list(Params['parameter_ranges'].keys()) if 'parameter_ranges' in Params else None
 
     if keys is None or solver is None or base_case_dir is None:
@@ -75,7 +77,7 @@ def uq_simulation(X, Params):
     ##############################################################################################################
     ## Sample generation #########################################################################################
     process_func = partial(
-        _process_simulation,
+        _process_random_sim,
         exp_config=Params
     )
 
@@ -93,7 +95,7 @@ def uq_simulation(X, Params):
     print(f"Simulation executed successfully. Files saved in 'experiments/{exp_name}' folder")
 
 
-def _process_simulation(param_data, exp_config, verbose=False):
+def _process_random_sim(param_data, exp_config, verbose=False):
     """
     Process a single simulation (helper function for multiprocessing).
     
@@ -119,7 +121,7 @@ def _process_simulation(param_data, exp_config, verbose=False):
 
 
 
-def run_simulation(params, exp_config, experiment_folder=None, verbose=False):
+def run_simulation(params, exp_config, verbose=False):
     """
     Runs an OpenFOAM simulation with the given parameters.
 
@@ -127,8 +129,28 @@ def run_simulation(params, exp_config, experiment_folder=None, verbose=False):
         params (dict): Dictionary containing the parameters for the simulation.
         exp_config (dict): Configuration dictionary containing experiment details.
     """
+    if not isinstance(params, dict):
+        raise ValueError("params must be a dictionary")
+    if not params:
+        raise ValueError("params must not be empty")
+    if not isinstance(exp_config, dict):
+        raise ValueError("exp_config must be a dictionary")
+    if not exp_config:
+        raise ValueError("exp_config must not be empty")
 
-    new_dir = Path("..") / "experiments" / exp_config['experiment']['name']
+    if 'experiment' not in exp_config:
+        raise ValueError("exp_config dict must contain 'experiment' key")
+    if 'base_case_dir' not in exp_config['experiment']:
+        raise ValueError("exp_config['experiment'] must contain a 'base_case_dir' key")
+    
+    experiments_base_dir = exp_config['experiment'].get('destination_folder', _DESTINATION_FOLDER)
+
+    if not Path(experiments_base_dir).exists():
+        Path(experiments_base_dir).mkdir(parents=True, exist_ok=True)
+        print(f"Folder {experiments_base_dir} didn't exist and was created.")
+
+    experiment_name = exp_config['experiment'].get('name', 'temp')
+    new_dir = Path(experiments_base_dir) / experiment_name
     base_dir = Path(exp_config['experiment']['base_case_dir'])
 
     try:
@@ -218,7 +240,7 @@ def run_uq_study(config_file, n_samples, verbose=False):
         raise Exception("The parameter 'parameter_ranges' must be provided in the config file")
 
     process_func = partial(
-        _process_simulation,
+        _process_random_sim,
         exp_config=config
     )
 
