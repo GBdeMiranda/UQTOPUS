@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "uqtopus"
-version = "0.1.0"
+version = "0.1.1"
 description = "Uncertainty Quantification Toolbox for OpenFOAM and Python Unified Simulation workflows"
 license = { file = "LICENSE" }
 readme = "README.md"
