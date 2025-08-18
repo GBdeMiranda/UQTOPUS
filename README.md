@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/uqtopus.png" alt="UQTOPUS Logo" width="128" height="128">
+  <img src="[assets/uqtopus.png](https://raw.githubusercontent.com/GBdeMiranda/UQTOPUS/main/assets/uqtopus.png)" alt="UQTOPUS Logo" width="128" height="128">
   <h1>UQTOPUS</h1>
   <p><b>U</b>ncertainty <b>Q</b>uantification <b>T</b>oolbox for <b>O</b>penFOAM and <b>P</b>ython <b>U</b>nified <b>S</b>imulation workflows<br></p>
 
@@ -11,7 +11,7 @@ It automates sampling, case templating, execution, and results analysis to enabl
 
 Ultimately, this project aims to enable the usage of OpenFOAM simulator to perform efficient and automated uncertainty quantification studies aided by surrogate modeling techniques wrapping the OpenFOAM simulation process.
 
-<img src="assets/simulator_wrapper.png" alt="Simulator wrapper overview" width="600">
+<img src="[assets/simulator_wrapper.png](https://raw.githubusercontent.com/GBdeMiranda/UQTOPUS/main/assets/simulator_wrapper.png)" alt="Simulator wrapper overview" width="600">
 
 Built on top of `Jinja2`, `xarray` and `fluidfoam`.
 
