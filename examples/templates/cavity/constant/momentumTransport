@@ -26,11 +26,11 @@ RAS
 
     kEpsilonCoeffs
     {
-        Cmu        {{Cmu}};
-        C1         {{C1}};
-        C2         {{C2}};
-        sigmaK     {{sigmaK}};
-        sigmaEps   {{sigmaEps}};
+        Cmu        0.09;
+        C1         1.44;
+        C2         1.92;
+        sigmaK     1.0;
+        sigmaEps   1.3;
     }
 }
 

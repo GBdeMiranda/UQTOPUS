@@ -15,7 +15,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from ..utils import load_config
 from .sampling import generate_samples
 
-_DESTINATION_FOLDER = Path('experiments')   # Default destination folder for experiments
+_DESTINATION_FOLDER = Path('experiments/temp')   # Default destination folder for experiments
 
 def uq_simulation(X, Params):
     """
@@ -31,7 +31,8 @@ def uq_simulation(X, Params):
 
         Params (dict)
             Dictionary containing information about the input and output parameters of the model.
-            'experiment': Name of the experiment/folder (default: 'temp')
+            'input_path': Path of the input template for the UQ experiment
+            'output_path': Path of the outputs for the UQ experiment (default: 'experiments/temp')
             'parameter_ranges': Dictionary defining the ranges for each parameter
             'nthreads': Number of threads to be used in the simulation (default: 1)
             'solver': Name of the script-solver to be used. The same as defined in the OpenFOAM template case
@@ -42,35 +43,30 @@ def uq_simulation(X, Params):
     ## Input parameters validation ###############################################################################
     for k in Params.keys():
         if k not in [
-            'experiment', 'parameter_ranges',
-            'nthreads', 'solver',
+            'input_path', 'output_path',
+            'parameter_ranges', 'nthreads', 'solver',
             'theModel' # parameter from uqpylab, it is not used here
         ]:
             raise Exception(f"Unknown key '{k}' in Params")
-    for k in Params['experiment'].keys():
-        if k not in ['experiment', 'base_case_dir', 'name', 'destination_folder']:
-            raise Exception(f"Unknown key '{k}' in Params['experiment']")
 
-    base_case_dir = Params['experiment'].get('base_case_dir', None)
+    input_path = Params.get('input_path', None)
+    output_path = Params.get('output_path', _DESTINATION_FOLDER)
     solver = Params.get('solver', None)
     keys = list(Params['parameter_ranges'].keys()) if 'parameter_ranges' in Params else None
 
-    if keys is None or solver is None or base_case_dir is None:
-        raise Exception("The parameters 'base_case_dir', 'solver', and 'parameter_ranges' must be provided as arguments in Params")
+    if keys is None or solver is None or input_path is None:
+        raise Exception("The parameters 'input_path', 'solver', and 'parameter_ranges' must be provided as arguments in Params")
     else:
-        if not os.path.exists(base_case_dir):
-            raise ValueError('The "base_case_dir" path passed as parameter does not exist')
+        if not os.path.exists(input_path):
+            raise ValueError('The "input_path" path passed as parameter does not exist')
         if not isinstance(keys, list):
-            try:
-                keys = list(keys)
-            except:
-                raise ValueError('The parameter "parameter_ranges" should be a dict with valid inputs')
+            keys = list(keys)
         if len(keys) != X.shape[1]:
-            raise ValueError('The number of keys passed must be equal to the number of the input columns in the experimental design')
+            raise ValueError('The number of sampled parameters passed must be equal to the number of the input columns in the experimental design X')
 
 
     nthreads = Params['nthreads'] if 'nthreads' in Params else 1
-    exp_name = Params['experiment']['name'] if 'name' in Params['experiment'] else 'temp'
+    exp_name = Path(output_path).name
     ##############################################################################################################
 
     
@@ -92,24 +88,22 @@ def uq_simulation(X, Params):
             pass
     ##############################################################################################################
 
-    print(f"Simulation executed successfully. Files saved in 'experiments/{exp_name}' folder")
+    print(f"UQ study completed. Results saved in '{output_path}' folder")
 
 
 def _process_random_sim(param_data, exp_config, verbose=False):
     """
-    Process a single simulation (helper function for multiprocessing).
+    Process a single simulation (helper function for randomized multiprocessing).
     
     Parameters:
         param_data ((index, parameters_dict)): Tuple containing the sample index and parameters dictionary.
-        base_case_dir (str): Path to base case directory
-        exp_name (str): Experiment name
         exp_config (dict): Solver configuration
     """
     i, params = param_data
-    exp_name = exp_config['experiment']['name']
-    experiment_name = f"{exp_name}/sample_{i:03d}"
-    exp_config['experiment']['name'] = experiment_name
-    
+    exp_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
+    experiment_name = exp_path / f"sample_{i:03d}"
+    exp_config['output_path'] = str(experiment_name)
+
     try:
         run_simulation(
             params=params,
@@ -138,30 +132,27 @@ def run_simulation(params, exp_config, verbose=False):
     if not exp_config:
         raise ValueError("exp_config must not be empty")
 
-    if 'experiment' not in exp_config:
-        raise ValueError("exp_config dict must contain 'experiment' key")
-    if 'base_case_dir' not in exp_config['experiment']:
-        raise ValueError("exp_config['experiment'] must contain a 'base_case_dir' key")
-    
-    experiments_base_dir = exp_config['experiment'].get('destination_folder', _DESTINATION_FOLDER)
+    output_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER / 'temp'))
 
-    if not Path(experiments_base_dir).exists():
-        Path(experiments_base_dir).mkdir(parents=True, exist_ok=True)
-        print(f"Folder {experiments_base_dir} didn't exist and was created.")
+    if 'input_path' not in exp_config:
+        raise ValueError("exp_config must contain a 'input_path' key")
 
-    experiment_name = exp_config['experiment'].get('name', 'temp')
-    new_dir = Path(experiments_base_dir) / experiment_name
-    base_dir = Path(exp_config['experiment']['base_case_dir'])
+    parent_folder = Path(output_path).parent
+    if not Path(parent_folder).exists():
+        Path(parent_folder).mkdir(parents=True, exist_ok=True)
+        print(f"Folder {parent_folder} didn't exist and was created.")
+
+    base_dir = Path(exp_config['input_path'])
 
     try:
-        if not new_dir.exists():
-            new_dir.mkdir(parents=True)
+        if not output_path.exists():
+            output_path.mkdir(parents=True)
         else:
             if verbose:
                 print(" -- The directory already exists. Files will be overwritten. --")
             
         result = subprocess.run(
-            ["rsync", "-av", "--delete", f'{str(base_dir)}/', f'{str(new_dir)}/'],
+            ["rsync", "-av", "--delete", f'{str(base_dir)}/', f'{str(output_path)}/'],
             check=True,
             capture_output=True,
             text=True
@@ -197,14 +188,14 @@ def run_simulation(params, exp_config, verbose=False):
         template = env.get_template(str(template_path))
         output = template.render(params_dict, undefined=StrictUndefined)
 
-        target_path = new_dir / template_path
+        target_path = output_path / template_path
         target_path.parent.mkdir(parents=True, exist_ok=True)  # ensure dirs exist
         target_path.write_text(output)
 
     try:
         result = subprocess.run(
             [f"./{exp_config['solver']}"],
-            cwd=new_dir,
+            cwd=output_path,
             check=True,
             capture_output=True,
             text=True
@@ -222,16 +213,22 @@ def run_uq_study(config_file, n_samples, verbose=False):
     """
     config = load_config(config_file)
 
+    input_path = config.get('input_path', None)
+    output_path = config.get('output_path', _DESTINATION_FOLDER )
+    solver = config.get('solver', None)
+    parameter_ranges = config.get('parameter_ranges', None)
+
+    if input_path is None or solver is None or parameter_ranges is None:
+        raise ValueError("The parameters 'input_path', 'solver', and 'parameter_ranges' must be provided as arguments in config_file")
+
     X = generate_samples(
         n_samples=n_samples,
-        param_ranges=config['parameter_ranges'],
+        param_ranges=parameter_ranges,
         method='lhs',
         seed=42
     )
-    
     if X.ndim == 1:
         X = X.reshape(-1, 1)
-    
     X = X.tolist()
 
     nthreads = config['nthreads'] if 'nthreads' in config else 1
@@ -255,5 +252,5 @@ def run_uq_study(config_file, n_samples, verbose=False):
             pass
 
     if verbose:
-        print(f"UQ study completed. Results saved in 'experiments/{config['experiment']['name']}' folder")
+        print(f"UQ study completed. Results saved in '{output_path}' folder")
     return None

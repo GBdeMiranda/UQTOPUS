@@ -6,6 +6,7 @@ from tqdm import tqdm
 import numpy as np
 import xarray as xr
 import yaml
+import json
 from fluidfoam import readmesh, readfield, readvector, readscalar, typefield
 
 
@@ -146,7 +147,7 @@ def read_uq_experiment(case_dir:str, variables:list[str], n_samples:int, time_di
 
 def load_config(config_path:str="config.yaml"):
     """
-    Load configuration from YAML file.
+    Load configuration from YAML or JSON file.
     
     Parameters:
         config_path (str): Path to configuration file
@@ -154,9 +155,13 @@ def load_config(config_path:str="config.yaml"):
     Returns:
         dict: Configuration dictionary
     """
+    
     try:
         with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
+            if config_path.lower().endswith('.json'):
+                config = json.load(f)
+            else:
+                config = yaml.safe_load(f)
         return config
     except Exception as e:
         print(f"Error loading config from {config_path}: {e}")
@@ -169,6 +174,7 @@ def load_config(config_path:str="config.yaml"):
 # ===================================
 
 import re
+import json
 
 def read_openfoam_field(file_path):
     """
