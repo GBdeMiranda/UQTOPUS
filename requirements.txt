@@ -1,14 +1,15 @@
-# Core dependencies for OpenUQFOAM
+fluidfoam>=0.2.9
+Jinja2>=3.1.6
+numpy>=1.21.0
+pyDOE3>=1.2.0
+PyYAML>=6.0.2
+tqdm>=4.66.5
+xarray>=2024.6.0
+setuptools~=75.1.0
 numpy~=1.21
-xarray>=2025
-jinja2>=3.0.0
-uqpylab~=1.0.2
-fluidfoam>=0.2
-pyyaml>=6.0.0
-tqdm>=4.60.0
-pyDOE3>=1.2
-python-dotenv~=1.1.1
 
 # testing purposes
+uqpylab~=1.0.2
+python-dotenv~=1.1.1
 scipy>=1.7.0
 matplotlib>=3.5.0

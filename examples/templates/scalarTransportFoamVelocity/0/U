@@ -9,14 +9,13 @@ FoamFile
 {
     format      ascii;
     class       volVectorField;
-    location    "288";
     object      U;
 }
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 dimensions      [0 1 -1 0 0 0 0];
 
-internalField   nonuniform List<vector>
+internalField   nonuniform List<vector> 
 12225
 (
 {% for vx, vy, vz in velocities -%}

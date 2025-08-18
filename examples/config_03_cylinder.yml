@@ -1,6 +1,5 @@
-experiment:
-  name: myFirstSurrogate
-  base_case_dir: ../templates/cavity
+input_path: templates/offsetCylinder
+output_path: experiments/cylinderSurrogate
 parameter_ranges:
   constant__momentumTransport__nuInf: [0.5, 15]
   constant__momentumTransport__m: [0.1, 0.5]
