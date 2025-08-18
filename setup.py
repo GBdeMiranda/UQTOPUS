@@ -7,7 +7,6 @@ setup(
     packages=find_packages(where="src"),
     install_requires=[
         "numpy",
-        "scipy",
         "pyDOE3",
         "tqdm",
         "jinja2",

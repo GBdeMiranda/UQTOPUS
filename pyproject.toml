@@ -12,6 +12,10 @@ authors = [
     { name = "Gabriel Brandao de Miranda", email = "gabrielbrandaodemiranda@gmail.com" },
 ]
 
+[project.urls]
+Homepage = "https://github.com/GBdeMiranda/uqtopus"
+Repository = "https://github.com/GBdeMiranda/uqtopus"
+
 dependencies = [
     "fluidfoam>=0.2.9,<0.3.0",
     "Jinja2>=3.1.6,<4.0.0",
