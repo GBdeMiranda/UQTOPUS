@@ -132,15 +132,19 @@ def run_simulation(params, exp_config, verbose=False):
     if not exp_config:
         raise ValueError("exp_config must not be empty")
 
-    output_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER / 'temp'))
+    output_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
 
     if 'input_path' not in exp_config:
         raise ValueError("exp_config must contain a 'input_path' key")
 
+    exp_name = output_path.name    
     parent_folder = Path(output_path).parent
+    if exp_name.startswith("sample"):
+        parent_folder = parent_folder.parent
     if not Path(parent_folder).exists():
         Path(parent_folder).mkdir(parents=True, exist_ok=True)
-        print(f"Folder {parent_folder} didn't exist and was created.")
+        if verbose:
+            print(f"Created parent directory: {parent_folder}")
 
     base_dir = Path(exp_config['input_path'])
 
@@ -160,7 +164,7 @@ def run_simulation(params, exp_config, verbose=False):
         if verbose:
             print(result.stdout)
     except subprocess.CalledProcessError as e:
-        print("Error copying the files:", e.stderr)
+        raise RuntimeError("Error copying the files:", e.stderr)
 
     env = Environment(
         loader=FileSystemLoader(base_dir),

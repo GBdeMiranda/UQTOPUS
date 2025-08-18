@@ -70,19 +70,19 @@ For other systems, visit: https://openfoam.org/download/
 ```
 UQTOPUS/
 ├── src/                      # Python package
-│   └── uqtopus/              
-├── templates/                # OpenFOAM case templates
-│   └── base_case/            # Base case with Jinja2 placeholders
-│       ├── constant/
-│       ├── system/
-│       └── 0/
-├── examples/                 # Example scripts and analysis
-├── experiments/              # UQ study results
-│   └── [study_name]/         # Individual study results
-│       ├── sample_001/       # OpenFOAM case for sample 1
-│       ├── sample_002/       # OpenFOAM case for sample 2
-│       ...
-├── config.yaml               # Main configuration file
+├── examples/                 # Example of usage with scripts and templates
+│   ├── templates/            # OpenFOAM case templates
+│   │   └── base_case/        # Base case with Jinja2 placeholders
+│   │       ├── constant/
+│   │       ├── system/
+│   │       ├── 0/
+│   │       └── [script_file]     # Run script (e.g., Allrun)
+│   ├── experiments/          # UQ study results
+│   │   └── [study_name]/     # Individual study results
+│   │       ├── sample_001/   # OpenFOAM case for sample 1
+│   │       ├── sample_002/   # OpenFOAM case for sample 2
+│   │       └── ...
+│   └── config.yaml           # Configuration file for examples
 └── README.md                 # This file
 ```
 
