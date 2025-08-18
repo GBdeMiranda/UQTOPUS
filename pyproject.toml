@@ -1,23 +1,34 @@
 [build-system]
-requires = ["setuptools>=63.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "uqtopus"
 version = "0.1.0"
 description = "Uncertainty Quantification Toolbox for OpenFOAM and Python Unified Simulation workflows"
+license = { file = "LICENSE" }
 readme = "README.md"
 authors = [
     { name = "Gabriel Brandao de Miranda", email = "gabrielbrandaodemiranda@gmail.com" },
 ]
 
 dependencies = [
-    "xarray",
-    "jinja2",
-    "fluidfoam",
-    "numpy",
-    "scipy",
-    "pyDOE3",
-    "tqdm",
-    "pyyaml"
+    "fluidfoam>=0.2.9,<0.3.0",
+    "Jinja2>=3.1.6,<4.0.0",
+    "numpy>=1.21.0,<2.0.0",
+    "pyDOE3>=1.2.0,<2.0.0",
+    "PyYAML>=6.0.2,<7.0.0",
+    "tqdm>=4.66.5,<5.0.0",
+    "xarray>=2024.6.0,<2026.0.0"
+]
+
+[project.optional-dependencies]
+dev = ["uv>=0.1.0", "ipython"]
+test = [
+    "setuptools>=75.1.0",
+    "uqpylab>=1.0.2",
+    "python-dotenv>=1.1.1",
+    "matplotlib>=3.5.0",
+    "pytest",
+    "ipython"
 ]

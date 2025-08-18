@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/uqtopus.png" alt="UQTOPUS Logo" width="128" height="128">
-  <h1>UQTOPUS (v0.1)</h1>
+  <h1>UQTOPUS</h1>
   <p><b>U</b>ncertainty <b>Q</b>uantification <b>T</b>oolbox for <b>O</b>penFOAM and <b>P</b>ython <b>U</b>nified <b>S</b>imulation workflows<br></p>
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -13,15 +13,15 @@ Ultimately, this project aims to enable the usage of OpenFOAM simulator to perfo
 
 <img src="assets/simulator_wrapper.png" alt="Simulator wrapper overview" width="600">
 
+Built on top of `Jinja2`, `xarray` and `fluidfoam`.
+
 ## Features
 
 - End-to-end UQ workflow: sample → render cases → run → collect → analyze
 - OpenFOAM-native integration: Jinja2-templated dictionaries and Allrun orchestration
 - Parallel execution built-in support for sampled scenarios
-- Reproducible experiment management under experiments/[study]/sample_NNN
-- Result parsing and basic statistics with CSV/NumPy-friendly outputs
-- Pluggable sampling strategies and easy extension
-- Extensible hooks for surrogate modeling and custom post-processing
+- Reproducible experiment management and basic statistics with CSV/NumPy-friendly outputs
+- Extensible hooks for surrogate modeling with `uqpylab` (https://uqpylab.uq-cloud.io/) and custom post-processing 
 
 ## Installation
 
@@ -49,21 +49,67 @@ For other systems, visit: https://openfoam.org/download/
 
 ### Setup
 
-1. Clone the repository:
+1. Install Python package:
    ```bash
-   git clone https://github.com/GBdeMiranda/UQTOPUS.git
-   cd UQTOPUS
+   pip install uqtopus
    ```
 
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Ensure OpenFOAM is installed and sourced:
+2. Ensure OpenFOAM is installed and sourced:
    ```bash
    source /opt/openfoam9/etc/bashrc  # Adjust path as needed
    ```
+
+## Basic Usage
+
+- Set a config file:
+```yaml
+# config.yaml
+output_path: experiments/myUQStudy
+input_path: templates/templateSimulation
+solver: mySolverScript
+parameter_ranges:
+  [folder_path]__[file_name]__[param_name]: [0.01, 0.3]
+nthreads: 2
+```
+
+- Templatize the simulation file with the desired variables in Jinja2 format (double curly braces):
+```
+...
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      transportProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+param1              {{param1}};
+param2              {{param2}};
+param3              {{param3}};
+...
+```
+
+- Set the solver script:
+```bash
+#!/bin/bash
+cd ${0%/*} || exit 1    # Run from this directory
+
+# Source tutorial run functions
+. $WM_PROJECT_DIR/bin/tools/RunFunctions
+
+runApplication blockMesh
+runApplication $(getApplication)
+```
+
+- Run a UQ study:
+```python
+import uqtopus as uqt
+config = 'config.yaml'
+uqt.run_uq_study(config, n_samples=50)
+```
+
+For more information on configuring and running UQ studies, please refer to the example notebooks.
 
 ## Directory Structure
 

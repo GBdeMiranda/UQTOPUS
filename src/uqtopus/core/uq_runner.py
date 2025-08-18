@@ -114,103 +114,6 @@ def _process_random_sim(param_data, exp_config, verbose=False):
         print(f"Error in sample {i}: {e}")
 
 
-
-def run_simulation(params, exp_config, verbose=False):
-    """
-    Runs an OpenFOAM simulation with the given parameters.
-
-    Parameters:
-        params (dict): Dictionary containing the parameters for the simulation.
-        exp_config (dict): Configuration dictionary containing experiment details.
-    """
-    if not isinstance(params, dict):
-        raise ValueError("params must be a dictionary")
-    if not params:
-        raise ValueError("params must not be empty")
-    if not isinstance(exp_config, dict):
-        raise ValueError("exp_config must be a dictionary")
-    if not exp_config:
-        raise ValueError("exp_config must not be empty")
-
-    output_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
-
-    if 'input_path' not in exp_config:
-        raise ValueError("exp_config must contain a 'input_path' key")
-
-    exp_name = output_path.name    
-    parent_folder = Path(output_path).parent
-    if exp_name.startswith("sample"):
-        parent_folder = parent_folder.parent
-    if not Path(parent_folder).exists():
-        Path(parent_folder).mkdir(parents=True, exist_ok=True)
-        if verbose:
-            print(f"Created parent directory: {parent_folder}")
-
-    base_dir = Path(exp_config['input_path'])
-
-    try:
-        if not output_path.exists():
-            output_path.mkdir(parents=True)
-        else:
-            if verbose:
-                print(" -- The directory already exists. Files will be overwritten. --")
-            
-        result = subprocess.run(
-            ["rsync", "-av", "--delete", f'{str(base_dir)}/', f'{str(output_path)}/'],
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        if verbose:
-            print(result.stdout)
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError("Error copying the files:", e.stderr)
-
-    env = Environment(
-        loader=FileSystemLoader(base_dir),
-        trim_blocks=True,
-        lstrip_blocks=True
-    )
-
-    # Create a new dict with template paths with their respective params
-    paths_n_vars = {}
-    for param_path, value in params.items():
-        path_parts = param_path.split('__')
-        if len(path_parts) < 2:
-            if len(path_parts) < 2:
-                raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder__filename__paramname' format.")
-        param = path_parts[-1]
-
-        template_path = str(Path(*path_parts[:-1]))
-
-        if template_path not in paths_n_vars:
-            paths_n_vars[template_path] = {}
-        paths_n_vars[template_path][param] = value
-
-    # For each template path render all its params at once
-    for template_path, params_dict in paths_n_vars.items():
-        template = env.get_template(str(template_path))
-        output = template.render(params_dict, undefined=StrictUndefined)
-
-        target_path = output_path / template_path
-        target_path.parent.mkdir(parents=True, exist_ok=True)  # ensure dirs exist
-        target_path.write_text(output)
-
-    try:
-        result = subprocess.run(
-            [f"./{exp_config['solver']}"],
-            cwd=output_path,
-            check=True,
-            capture_output=True,
-            text=True
-        )
-        if verbose:
-            print(result.stdout)
-
-    except subprocess.CalledProcessError as e:
-        print("Error running the script:", e.stderr)
-
-
 def run_uq_study(config_file, n_samples, verbose=False):
     """
     Standalone function to run UQ study for scalar parameters.
@@ -258,3 +161,110 @@ def run_uq_study(config_file, n_samples, verbose=False):
     if verbose:
         print(f"UQ study completed. Results saved in '{output_path}' folder")
     return None
+
+
+
+def run_simulation(params, exp_config, verbose=False):
+    """
+    Runs an OpenFOAM simulation with the given parameters.
+
+    Parameters:
+        params (dict): Dictionary containing the parameters for the simulation.
+        exp_config (dict): Configuration dictionary containing experiment details.
+    """
+    if not isinstance(params, dict):
+        raise ValueError("params must be a dictionary")
+    if not params:
+        raise ValueError("params must not be empty")
+    if not isinstance(exp_config, dict):
+        raise ValueError("exp_config must be a dictionary")
+    if not exp_config:
+        raise ValueError("exp_config must not be empty")
+
+    base_dir = Path(exp_config['input_path'])
+    output_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
+    solver_script = exp_config['solver']
+
+    if 'input_path' not in exp_config:
+        raise ValueError("exp_config must contain a 'input_path' key")
+
+    exp_name = output_path.name    
+    parent_folder = Path(output_path).parent
+    if exp_name.startswith("sample"):
+        parent_folder = parent_folder.parent
+    if not Path(parent_folder).exists():
+        Path(parent_folder).mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"Created parent directory: {parent_folder}")
+
+
+    try:
+        if not output_path.exists():
+            output_path.mkdir(parents=True)
+        else:
+            if verbose:
+                print(" -- The directory already exists. Files will be overwritten. --")
+            
+        result = subprocess.run(
+            ["rsync", "-av", "--delete", f'{str(base_dir)}/', f'{str(output_path)}/'],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        if verbose:
+            print(result.stdout)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("Error copying the files:", e.stderr)
+
+    env = Environment(
+        loader=FileSystemLoader(base_dir),
+        trim_blocks=True,
+        lstrip_blocks=True
+    )
+
+    # ======================================================================
+    # REORGANIZING RENDERIZATION STRATEGY
+    # Create a new dict with template paths with their respective params
+    paths_n_vars = {}
+    for param_path, value in params.items():
+        path_parts = param_path.split('__')
+        if len(path_parts) < 2:
+            if len(path_parts) < 2:
+                raise ValueError(f"Parameter key '{param_path}' is not in the correct format. Use 'folder__filename__paramname' format.")
+        param = path_parts[-1]
+
+        template_path = str(Path(*path_parts[:-1]))
+
+        if template_path not in paths_n_vars:
+            paths_n_vars[template_path] = {}
+        paths_n_vars[template_path][param] = value
+
+    # For each template path render all its params at once
+    for template_path, params_dict in paths_n_vars.items():
+        template = env.get_template(str(template_path))
+        output = template.render(params_dict, undefined=StrictUndefined)
+
+        target_path = output_path / template_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)  # ensure dirs exist
+        target_path.write_text(output)
+    # ======================================================================
+
+    try:
+        solver_path = output_path / solver_script
+        if not solver_path.exists():
+            raise FileNotFoundError(f"Solver script not found: {solver_path}")
+
+        result = subprocess.run(
+            [f"./{solver_script}"],
+            cwd=str(output_path),
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        if verbose:
+            print(result.stdout)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Solver failed with code {e.returncode}")
+        print("STDOUT:", e.stdout)
+        print("STDERR:", e.stderr)
