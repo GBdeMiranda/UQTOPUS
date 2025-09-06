@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://raw.githubusercontent.com/GBdeMiranda/UQTOPUS/main/assets/uqtopus.png" alt="UQTOPUS Logo" width="128" height="128">
   <h1>UQTOPUS</h1>
-  <p><b>U</b>ncertainty <b>Q</b>uantification <b>T</b>oolbox for <b>O</b>penFOAM and <b>P</b>ython <b>U</b>nified <b>S</b>imulation workflows<br></p>
+  <p><b>U</b>ncertainty <b>Q</b>uantification <b>T</b>oolbox for <b>O</b>penFOAM and <b>P</b>ython <b>U</b>nified <b>S</b>imulation<br></p>
 
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 </div>
