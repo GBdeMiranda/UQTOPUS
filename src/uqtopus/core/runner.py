@@ -13,7 +13,7 @@ from functools import partial
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from ..utils import load_config
-from .sampling import generate_samples
+from .sampler import generate_samples
 
 _DESTINATION_FOLDER = Path('experiments/temp')   # Default destination folder for experiments
 
@@ -188,9 +188,10 @@ def run_simulation(params, exp_config, verbose=False):
     if 'input_path' not in exp_config:
         raise ValueError("exp_config must contain a 'input_path' key")
 
+    # Handling the iter_ or sample_xxx folder case
     exp_name = output_path.name    
     parent_folder = Path(output_path).parent
-    if exp_name.startswith("sample"):
+    if exp_name.startswith("sample_") or exp_name.startswith("iter_"):
         parent_folder = parent_folder.parent
     if not Path(parent_folder).exists():
         Path(parent_folder).mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,7 @@ import yaml
 import json
 from fluidfoam import readmesh, readfield, readvector, readscalar, typefield
 
-
+import os
 def parse_openfoam_case(case_dir:str, variables:list[str], time_dirs:list[str]|str=None):
     """
     Parses the OpenFOAM case directory structure and reads all field data.
@@ -23,6 +23,7 @@ def parse_openfoam_case(case_dir:str, variables:list[str], time_dirs:list[str]|s
         xr.Dataset: Dataset with variables as data variables and time as coordinate.
     """
 
+    print(os.getcwd())
     if time_dirs is None:
         time_dirs = sorted(
             [p.name for p in Path(case_dir).iterdir() if p.is_dir() and p.stem.isdigit()],
