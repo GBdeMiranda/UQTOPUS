@@ -101,7 +101,7 @@ def _process_random_sim(param_data, exp_config, verbose=False):
     """
     i, params = param_data
     exp_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
-    experiment_name = exp_path / f"sample_{i:03d}"
+    experiment_name = exp_path / f"sample_{i:04d}"
     exp_config['output_path'] = str(experiment_name)
 
     try:
@@ -191,7 +191,7 @@ def run_simulation(params, exp_config, verbose=False):
     # Handling the iter_ or sample_xxx folder case
     exp_name = output_path.name    
     parent_folder = Path(output_path).parent
-    if exp_name.startswith("sample_") or exp_name.startswith("iter_"):
+    if exp_name.startswith("sample_"): # or exp_name.startswith("iter_"):
         parent_folder = parent_folder.parent
     if not Path(parent_folder).exists():
         Path(parent_folder).mkdir(parents=True, exist_ok=True)

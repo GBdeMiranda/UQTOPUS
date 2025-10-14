@@ -124,7 +124,7 @@ def read_uq_experiment(case_dir:str, variables:list[str], n_samples:int, time_di
                     variables=variables,
                     time_dirs=time_dirs
                 ),
-                [str(case_dir / f"sample_{i:03d}") for i in range(n_samples)],
+                [str(case_dir / f"sample_{i:04d}") for i in range(n_samples)],
             ),
             total=n_samples,
             desc="Processing cases",
