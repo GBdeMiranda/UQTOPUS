@@ -43,6 +43,7 @@ ipython_config.py
 # my folder for uq experiments
 experiments/*
 */experiments/*
+tests/*
 
 .env
 .vscode/

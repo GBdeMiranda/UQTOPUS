@@ -6,7 +6,7 @@
   [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 </div>
 
-UQTOPUS is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM CFD simulations 
+UQTOPUS is a Python framework for uncertainty quantification (UQ) studies with OpenFOAM CFD simulations.
 It automates sampling, case templating, execution, and results analysis to enable reproducible and scalable UQ experiments. The pipeline is designed to be extensible, including hooks for surrogate modeling and custom post-processing around OpenFOAM runs.
 
 Ultimately, this project aims to enable the usage of OpenFOAM simulator to perform efficient and automated uncertainty quantification studies aided by surrogate modeling techniques wrapping the OpenFOAM simulation process.

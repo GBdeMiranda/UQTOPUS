@@ -28,6 +28,10 @@ Repository = "https://github.com/GBdeMiranda/uqtopus"
 
 [project.optional-dependencies]
 dev = ["uv>=0.1.0", "ipython"]
+rl = [
+    "gymnasium>=0.29.0,<2.0.0",
+    "stable-baselines3>=2.0.0,<3.0.0",
+]
 test = [
     "setuptools>=75.1.0",
     "uqpylab>=1.0.2",
