@@ -9,6 +9,7 @@ from .core import (
     run_uq_study, uq_simulation, run_simulation,
     generate_samples,
     OpenFOAMSimulator,
+    SolverDivergedError,
 )
 from .utils import load_config, read_openfoam_field, parse_openfoam_case, read_uq_experiment
 
@@ -19,5 +20,6 @@ __version__ = version("uqtopus")
 __all__ = [
     'OpenFOAMSimulator',
     'run_uq_study', 'uq_simulation', 'run_simulation', 'generate_samples',
+    'SolverDivergedError',
     'load_config', 'read_openfoam_field', 'parse_openfoam_case', 'read_uq_experiment',
 ]

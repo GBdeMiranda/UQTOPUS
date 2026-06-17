@@ -14,6 +14,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from ..utils import load_config
 from .sampler import generate_samples
+from .exceptions import SolverDivergedError
 
 _DESTINATION_FOLDER = Path('experiments/temp')   # Default destination folder for experiments
 
@@ -266,6 +267,13 @@ def run_simulation(params, exp_config, verbose=False):
             print(result.stdout)
 
     except subprocess.CalledProcessError as e:
-        print(f"Solver failed with code {e.returncode}")
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
+        if verbose:
+            print(f"Solver failed with code {e.returncode}")
+            print("STDOUT:", e.stdout)
+            print("STDERR:", e.stderr)
+        raise SolverDivergedError(
+            f"OpenFOAM solver failed or diverged with exit code {e.returncode}.",
+            returncode=e.returncode,
+            stdout=e.stdout,
+            stderr=e.stderr
+        ) from e
