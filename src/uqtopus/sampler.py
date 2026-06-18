@@ -1,3 +1,4 @@
+import warnings
 import numpy as np
 from pyDOE3 import lhs, fullfact, pbdesign, bbdesign, ccdesign
 
@@ -13,16 +14,15 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
         **kwargs: Additional keyword arguments passed to the sampler.
     """
     
-    if seed is not None:
-        np.random.seed(seed)
-    
+    rng = np.random.default_rng(seed)
+
     param_names = list(param_ranges.keys())
     n_params = len(param_names)
     
     if method == 'lhs':
-        unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin')
+        unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin', random_state=rng)
     elif method == 'random':
-        unit_samples = np.random.random((n_samples, n_params))
+        unit_samples = rng.random((n_samples, n_params))
     elif method in ('grid', 'fullfact'):
         levels = kwargs.get('levels')
         if levels is None:
@@ -42,6 +42,12 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
         pb_matrix = pbdesign(n_params)
         unit_samples = (pb_matrix + 1) / 2
         if n_samples is not None and n_samples < len(unit_samples):
+            warnings.warn(
+                f"n_samples={n_samples} is smaller than the full '{method}' design "
+                f"({len(unit_samples)} points). Truncation breaks the design's statistical properties.",
+                UserWarning,
+                stacklevel=2,
+            )
             unit_samples = unit_samples[:n_samples]
     elif method == 'box_behnken':
         if n_params < 3:
@@ -49,21 +55,33 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
         bb_matrix = bbdesign(n_params)
         unit_samples = (bb_matrix + 1) / 2
         if n_samples is not None and n_samples < len(unit_samples):
+            warnings.warn(
+                f"n_samples={n_samples} is smaller than the full '{method}' design "
+                f"({len(unit_samples)} points). Truncation breaks the design's statistical properties.",
+                UserWarning,
+                stacklevel=2,
+            )
             unit_samples = unit_samples[:n_samples]
     elif method == 'central_composite':
         center = kwargs.get('center', (4, 4))
         alpha = kwargs.get('alpha', 'orthogonal')
         face = kwargs.get('face', 'faced')
         cc_matrix = ccdesign(n_params, center=center, alpha=alpha, face=face)
-        
+
         min_val_cc = cc_matrix.min()
         max_val_cc = cc_matrix.max()
         if max_val_cc > min_val_cc:
             unit_samples = (cc_matrix - min_val_cc) / (max_val_cc - min_val_cc)
         else:
             unit_samples = np.zeros_like(cc_matrix)
-            
+
         if n_samples is not None and n_samples < len(unit_samples):
+            warnings.warn(
+                f"n_samples={n_samples} is smaller than the full '{method}' design "
+                f"({len(unit_samples)} points). Truncation breaks the design's statistical properties.",
+                UserWarning,
+                stacklevel=2,
+            )
             unit_samples = unit_samples[:n_samples]
     else:
         raise ValueError(

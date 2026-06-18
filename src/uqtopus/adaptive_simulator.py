@@ -97,7 +97,11 @@ class AdaptiveSimulator:
             verbose (bool): Forward verbose output to the real simulator or logging.
             cleanup (bool): Cleanup temporary directories after real runs.
         """
-        uncertainty = self._get_uncertainty(params)
+        # _cache is populated by _get_uncertainty() whenever emulator.predict() is
+        # called internally, so that run() can reuse the result without a second
+        # forward pass through the surrogate model.
+        _cache: dict[str, Any] = {}
+        uncertainty = self._get_uncertainty(params, _cache)
 
         if uncertainty <= self.threshold:
             if verbose:
@@ -106,7 +110,7 @@ class AdaptiveSimulator:
                     uncertainty,
                     self.threshold,
                 )
-            prediction = self._get_prediction(params)
+            prediction = _cache["prediction"] if "prediction" in _cache else self._get_prediction(params)
             self._emulated_runs += 1
             return prediction
         else:
@@ -121,11 +125,19 @@ class AdaptiveSimulator:
             )
             self._real_runs += 1
 
-            # Trigger online retraining / model update if callback is set
+            # Trigger online retraining / model update if callback is set.
+            # A failure in update_fn must never discard the already-computed real result.
             if self.update_fn is not None:
                 if verbose:
                     logger.info("AdaptiveSimulator: Triggering emulator update/retraining.")
-                self.update_fn(params, real_result)
+                try:
+                    self.update_fn(params, real_result)
+                except Exception as exc:
+                    logger.error(
+                        "AdaptiveSimulator: update_fn raised an exception; "
+                        "the real simulation result is still returned. Error: %s",
+                        exc,
+                    )
 
             return real_result
 
@@ -135,8 +147,13 @@ class AdaptiveSimulator:
         self._emulated_runs = 0
         self.real_simulator.reset()
 
-    def _get_uncertainty(self, params: dict[str, float]) -> float:
-        """Helper to extract or calculate uncertainty for the given parameters."""
+    def _get_uncertainty(self, params: dict[str, float], _cache: dict | None = None) -> float:
+        """Helper to extract or calculate uncertainty for the given parameters.
+
+        Populates ``_cache['prediction']`` with the emulator output whenever
+        ``emulator.predict()`` is called internally, so that ``run()`` can reuse
+        the result and avoid a redundant forward pass through the surrogate.
+        """
         if self.uncertainty_fn is not None:
             try:
                 # Try calling with params
@@ -144,6 +161,8 @@ class AdaptiveSimulator:
             except (TypeError, ValueError):
                 # Fallback: get prediction first, then pass to uncertainty_fn
                 pred = self._get_prediction(params)
+                if _cache is not None:
+                    _cache["prediction"] = pred
                 return float(self.uncertainty_fn(pred))  # type: ignore
 
         if hasattr(self.emulator, "predict_uncertainty"):
@@ -152,9 +171,13 @@ class AdaptiveSimulator:
         # Check if predict returns a tuple (prediction, uncertainty)
         pred_res = self.emulator.predict(params)
         if isinstance(pred_res, tuple) and len(pred_res) == 2:
+            if _cache is not None:
+                _cache["prediction"] = pred_res[0]
             return float(pred_res[1])
 
         # Default fallback if no uncertainty method is found
+        if _cache is not None:
+            _cache["prediction"] = pred_res
         logger.warning(
             "AdaptiveSimulator: No uncertainty method found on emulator. "
             "Assuming uncertainty = infinity (always falling back to real simulator)."
