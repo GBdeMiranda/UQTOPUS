@@ -22,7 +22,7 @@ except ImportError as exc:
         "Install it with: pip install uqtopus[rl]"
     ) from exc
 
-from ..core.simulator import OpenFOAMSimulator
+from ..simulation import OpenFOAMSimulator
 
 logger = logging.getLogger(__name__)
 
