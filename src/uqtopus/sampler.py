@@ -8,10 +8,9 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
     Parameters:
         n_samples (int): Number of samples to generate.
         param_ranges (dict): Dictionary with parameter ranges.
-        method (str or callable): Built-in method ('lhs', 'random') or a custom
-                                  callable that returns unit samples in [0, 1].
+        method (str): Built-in method ('lhs', 'random').
         seed (int, optional): Random seed.
-        **kwargs: Additional keyword arguments passed to the custom sampler.
+        **kwargs: Additional keyword arguments passed to the sampler.
     """
     
     if seed is not None:
@@ -20,9 +19,7 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
     param_names = list(param_ranges.keys())
     n_params = len(param_names)
     
-    if callable(method):
-        unit_samples = method(n_params, n_samples, **kwargs)
-    elif method == 'lhs':
+    if method == 'lhs':
         unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin')
     elif method == 'random':
         unit_samples = np.random.random((n_samples, n_params))
@@ -33,7 +30,7 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
             levels = [n_levels] * n_params
         elif isinstance(levels, int):
             levels = [levels] * n_params
-        
+
         grid_indices = fullfact(levels)
         unit_samples = np.zeros_like(grid_indices, dtype=np.float64)
         for i, l in enumerate(levels):
