@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import logging
 import shutil
-import uuid
 import subprocess
 from pathlib import Path
 from typing import Callable, Any
@@ -278,12 +277,14 @@ class OpenFOAMSimulator:
         output_path: str | Path,
         qoi_variables: list[str],
         qoi_times: list[str] | str | None = None,
+        experiment_name: str = "run",
     ) -> None:
         self.template_path = Path(template_path)
         self.solver_script = solver_script
         self.output_path = Path(output_path)
         self.qoi_variables = qoi_variables
         self.qoi_times = qoi_times
+        self.experiment_name = experiment_name
         self._run_count: int = 0
 
         if not self.template_path.exists():
@@ -302,13 +303,32 @@ class OpenFOAMSimulator:
         step: int | None = None,
         verbose: bool = False,
         cleanup: bool = False,
+        overwrite: bool = True,
     ) -> xr.Dataset:
         """
         Execute one simulation with the given parameters and return results.
+
+        Parameters:
+            params: Dictionary of parameter values keyed as 'folder__filename__paramname'.
+            step: Optional explicit run index.
+                If provided, the run directory is named as f"{experiment_name}_{step:04d}".
+                If None, the internal counter `_run_count` is used as index.
+            verbose: Whether to print solver output.
+            cleanup: Whether to delete the run directory after parsing results.
+            overwrite: If True, existing run directory with same name is replaced.
         """
         idx = step if step is not None else self._run_count
-        run_hash = uuid.uuid4().hex[:8]
-        run_path = self.output_path / f"run_{idx:04d}_{run_hash}"
+        run_path = self.output_path / f"{self.experiment_name}_{idx:04d}"
+
+        if run_path.exists():
+            if overwrite:
+                shutil.rmtree(run_path)
+            else:
+                raise FileExistsError(
+                    f"Run directory already exists: {run_path}. "
+                    "Pass overwrite=True to replace it, or use a different "
+                    "'step'/'experiment_name'."
+                )
 
         exp_config = {
             "input_path": str(self.template_path),
@@ -327,8 +347,8 @@ class OpenFOAMSimulator:
             time_dirs=self.qoi_times,
         )
 
-        if step is None:
-            self._run_count += 1
+        # number of executions performed
+        self._run_count += 1
 
         if cleanup:
             try:
@@ -348,30 +368,43 @@ class OpenFOAMSimulator:
         n_jobs: int = -1,
         verbose: bool = False,
         cleanup: bool = False,
+        overwrite: bool = True,
     ) -> list[xr.Dataset]:
         """
         Execute multiple simulations in parallel.
+
+        Each run is given a deterministic index (0..len(params_list)-1) so that
+        parallel workers never collide on the same run directory, even though
+        each worker process has its own copy of `_run_count`.
         """
         if n_jobs < 1:
             n_jobs = mp.cpu_count()
-            
-        process_func = partial(self._process_single_run, verbose=verbose, cleanup=cleanup)
-        
+
+        process_func = partial(
+            self._process_single_run, verbose=verbose, cleanup=cleanup, overwrite=overwrite
+        )
+
+        indexed_params = list(enumerate(params_list))
+
         datasets = []
         with mp.get_context('spawn').Pool(n_jobs) as pool:
             for ds in tqdm(
-                pool.imap(process_func, params_list),
+                pool.imap(process_func, indexed_params),
                 total=len(params_list),
                 desc='Running parallel batch'
             ):
                 datasets.append(ds)
-                
+
         self._run_count += len(params_list)
         return datasets
 
-    def _process_single_run(self, params: dict[str, float], verbose: bool, cleanup: bool) -> xr.Dataset:
-        """Helper for multiprocessing."""
-        return self.run(params, verbose=verbose, cleanup=cleanup)
+    def _process_single_run(
+        self, indexed_params: tuple[int, dict[str, float]], verbose: bool, cleanup: bool, overwrite: bool
+    ) -> xr.Dataset:
+        """Helper for multiprocessing. Uses the batch-local index to avoid
+        directory name collisions between parallel workers."""
+        idx, params = indexed_params
+        return self.run(params, step=idx, verbose=verbose, cleanup=cleanup, overwrite=overwrite)
 
     def as_objective(
         self,
