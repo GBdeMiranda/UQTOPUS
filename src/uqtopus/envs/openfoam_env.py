@@ -109,7 +109,7 @@ class OpenFOAMEnv(gym.Env):
         )
 
         # Action space uses actual physical parameter ranges.
-        # If normalization is needed, use gymnasium.wrappers.RescaleAction.
+        # If normalization is needed, use gymnasium.wrappers.RescaleAction. XXX
         self.action_space = spaces.Box(
             low=self._param_lows.astype(np.float32),
             high=self._param_highs.astype(np.float32),
@@ -146,6 +146,7 @@ class OpenFOAMEnv(gym.Env):
 
         params = self._initial_params_dict(seed)
         dataset = self.simulator.run(params, verbose=self.verbose)
+        dataset = self._squeeze_singleton_time(dataset)
         self._last_dataset = dataset
 
         obs = np.array(self.observation_fn(dataset), dtype=np.float32)
@@ -160,11 +161,10 @@ class OpenFOAMEnv(gym.Env):
         Execute one simulation step.
 
         Parameters:
-            action (np.ndarray)
-                Parameter values in the physical ranges defined by param_ranges.
+            action: Parameter values in the physical ranges defined by param_ranges.
 
         Returns (obs, reward, terminated, truncated, info).
-        Info contains 'params', 'step', and 'dataset' (xr.Dataset).
+            Info contains 'params', 'step', and 'dataset' (xr.Dataset).
         """
         self._current_step += 1
 
@@ -172,6 +172,7 @@ class OpenFOAMEnv(gym.Env):
         dataset = self.simulator.run(
             params, step=self._current_step, verbose=self.verbose
         )
+        dataset = self._squeeze_singleton_time(dataset)
         self._last_dataset = dataset
 
         obs = np.array(self.observation_fn(dataset), dtype=np.float32)
@@ -193,9 +194,18 @@ class OpenFOAMEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def render(self) -> None:  # type: ignore[override]
+        """Placeholder for rendering functionality."""
         pass
 
+    @staticmethod
+    def _squeeze_singleton_time(dataset: xr.Dataset) -> xr.Dataset:
+        """Drops the 'time' dimension when it has length 1."""
+        if "time" in dataset.sizes and dataset.sizes["time"] == 1:
+            dataset = dataset.squeeze("time", drop=True)
+        return dataset
+
     def _action_to_params(self, action: np.ndarray) -> dict[str, float]:
+        """Convert an action (clip to bounds) to a dictionary of parameters."""
         action = np.clip(
             np.asarray(action, dtype=np.float64),
             self._param_lows,
@@ -204,6 +214,7 @@ class OpenFOAMEnv(gym.Env):
         return dict(zip(self.param_keys, action.tolist()))
 
     def _initial_params_dict(self, seed: int | None) -> dict[str, float]:
+        """Return the initial parameters for the environment."""
         if self.initial_params is not None:
             missing = set(self.param_keys) - set(self.initial_params)
             if missing:
@@ -215,6 +226,7 @@ class OpenFOAMEnv(gym.Env):
         return dict(zip(self.param_keys, values.tolist()))
 
     def __repr__(self) -> str:
+        """Return a string representation of the environment."""
         return (
             f"OpenFOAMEnv("
             f"params={self.param_keys}, "
