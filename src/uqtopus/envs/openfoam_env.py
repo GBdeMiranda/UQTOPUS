@@ -213,7 +213,7 @@ class OpenFOAMEnv(gym.Env):
         )
         return dict(zip(self.param_keys, action.tolist()))
 
-    def _initial_params_dict(self, seed: int | None) -> dict[str, float]:
+    def _initial_params_dict(self) -> dict[str, float]:
         """Return the initial parameters for the environment."""
         if self.initial_params is not None:
             missing = set(self.param_keys) - set(self.initial_params)
@@ -221,8 +221,7 @@ class OpenFOAMEnv(gym.Env):
                 raise ValueError(f"initial_params is missing keys: {missing}")
             return {k: self.initial_params[k] for k in self.param_keys}
 
-        rng = np.random.default_rng(seed)
-        values = rng.uniform(self._param_lows, self._param_highs)
+        values = self.np_random.uniform(self._param_lows, self._param_highs)
         return dict(zip(self.param_keys, values.tolist()))
 
     def __repr__(self) -> str:
