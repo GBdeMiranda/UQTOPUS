@@ -70,6 +70,11 @@ class OpenFOAMEnv(gym.Env):
         obs_bounds (tuple)
             (low, high) bounds for the observation space. Default: (-inf, +inf).
 
+        cleanup (bool)
+            If True, each run directory is deleted immediately after its results
+            are parsed. Useful during long training runs to avoid filling disk.
+            If False (default), all run directories are kept for post-hoc analysis.
+
         verbose (bool)
             Forward verbose output to the simulator.
     """
@@ -87,6 +92,7 @@ class OpenFOAMEnv(gym.Env):
         terminated_fn: Callable[[xr.Dataset, int], bool] | None = None,
         initial_params: dict[str, float] | None = None,
         obs_bounds: tuple[float, float] = (-np.inf, np.inf),
+        cleanup: bool = False,
         verbose: bool = False,
     ) -> None:
         super().__init__()
@@ -99,6 +105,7 @@ class OpenFOAMEnv(gym.Env):
         self.max_episode_steps = max_episode_steps
         self.terminated_fn = terminated_fn
         self.initial_params = initial_params
+        self.cleanup = cleanup
         self.verbose = verbose
 
         self._param_lows = np.array(
@@ -124,6 +131,7 @@ class OpenFOAMEnv(gym.Env):
         )
 
         self._current_step: int = 0
+        self._global_step: int = 0
         self._last_dataset: xr.Dataset | None = None
 
     def reset(
@@ -144,8 +152,11 @@ class OpenFOAMEnv(gym.Env):
         self.simulator.reset()
         self._current_step = 0
 
-        params = self._initial_params_dict(seed)
-        dataset = self.simulator.run(params, verbose=self.verbose)
+        params = self._initial_params_dict()
+        dataset = self.simulator.run(
+            params, step=self._global_step, verbose=self.verbose, cleanup=self.cleanup
+        )
+        self._global_step += 1
         dataset = self._squeeze_singleton_time(dataset)
         self._last_dataset = dataset
 
@@ -170,8 +181,9 @@ class OpenFOAMEnv(gym.Env):
 
         params = self._action_to_params(action)
         dataset = self.simulator.run(
-            params, step=self._current_step, verbose=self.verbose
+            params, step=self._global_step, verbose=self.verbose, cleanup=self.cleanup
         )
+        self._global_step += 1
         dataset = self._squeeze_singleton_time(dataset)
         self._last_dataset = dataset
 
