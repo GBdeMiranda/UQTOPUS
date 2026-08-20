@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "fluidfoam>=0.2.9,<0.3.0",
     "Jinja2>=3.1.6,<4.0.0",
-    "numpy>=1.21.0,<2.0.0",
+    "numpy>=1.21.0,<3.0.0",
     "pyDOE3>=1.2.0,<2.0.0",
     "PyYAML>=6.0.2,<7.0.0",
     "tqdm>=4.66.5,<5.0.0",
@@ -31,6 +31,8 @@ dev = ["uv>=0.1.0", "ipython"]
 rl = [
     "gymnasium>=0.29.0,<2.0.0",
     "stable-baselines3>=2.0.0,<3.0.0",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.17.0",
 ]
 test = [
     "setuptools>=75.1.0",
@@ -40,3 +42,6 @@ test = [
     "pytest",
     "ipython"
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

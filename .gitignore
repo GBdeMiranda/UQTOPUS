@@ -43,7 +43,8 @@ ipython_config.py
 # my folder for uq experiments
 experiments/*
 */experiments/*
-tests/*
+tests/**/output/
+tests/**/experiments/
 docs/*
 
 .env

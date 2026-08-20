@@ -1,0 +1,362 @@
+"""
+Closed-Loop Rollout Collection
+
+One solver run is one episode. Exports the policy, launches N cases and reads back
+N trajectories. Exposes collect(artifact) rather than a gymnasium step().
+"""
+
+from __future__ import annotations
+
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Mapping, Sequence
+
+import numpy as np
+import xarray as xr
+
+from ..exceptions import SolverDivergedError
+from ..simulation import OpenFOAMSimulator, run_simulation
+from .export import PolicyArtifact
+from .foam import controller_params
+from .reward import RewardFn, attach, evaluate_reward, read_function_object
+from .spec import PolicySpec
+from .trajectory import TrajectoryError, read_trajectory
+
+logger = logging.getLogger(__name__)
+
+RunFn = Callable[[Path, dict[str, Any]], None]
+
+
+@dataclass(frozen=True)
+class EpisodeFailure:
+    """One case that did not produce usable data."""
+
+    index: int
+    case_dir: Path
+    reason: str
+
+    def __str__(self) -> str:
+        return f"episode {self.index} ({self.case_dir.name}): {self.reason}"
+
+
+@dataclass
+class Rollout:
+    """
+    Experience collected with one frozen policy.
+
+    The flat views are laid out the way an on-policy buffer wants them: every
+    control step of every episode concatenated, with episode_starts marking the
+    boundaries.
+    """
+
+    artifact: PolicyArtifact
+    episodes: list[xr.Dataset] = field(default_factory=list)
+    failures: list[EpisodeFailure] = field(default_factory=list)
+
+    @property
+    def lengths(self) -> list[int]:
+        return [int(ds.sizes["time"]) for ds in self.episodes]
+
+    @property
+    def n_steps(self) -> int:
+        return sum(self.lengths)
+
+    @property
+    def observations(self) -> np.ndarray:
+        return self._stack("observation")
+
+    @property
+    def actions(self) -> np.ndarray:
+        return self._stack("action")
+
+    @property
+    def rewards(self) -> np.ndarray:
+        return np.concatenate([ds["reward"].values for ds in self.episodes])
+
+    @property
+    def episode_starts(self) -> np.ndarray:
+        """True on the first control step of each episode."""
+        flags = np.zeros(self.n_steps, dtype=bool)
+        index = 0
+        for length in self.lengths:
+            flags[index] = True
+            index += length
+        return flags
+
+    @property
+    def returns(self) -> np.ndarray:
+        """Undiscounted sum of rewards per episode."""
+        return np.array([float(ds["reward"].sum()) for ds in self.episodes])
+
+    def _stack(self, name: str) -> np.ndarray:
+        if not self.episodes:
+            raise ValueError("the rollout holds no episodes")
+        return np.concatenate([ds[name].values for ds in self.episodes], axis=0)
+
+    def __repr__(self) -> str:
+        return (
+            f"Rollout(episodes={len(self.episodes)}, steps={self.n_steps}, "
+            f"failures={len(self.failures)}, "
+            f"mean_return={self.returns.mean():.4g})"
+            if self.episodes
+            else f"Rollout(episodes=0, failures={len(self.failures)})"
+        )
+
+
+class ClosedLoopRunner:
+    """
+    Runs episodes of intrusive closed-loop control and returns their experience.
+
+    Parameters:
+        simulator (OpenFOAMSimulator): supplies the case template, the solver
+            script and the output directory. Its run() is not used.
+        spec (PolicySpec): the contract, rendered into the case and checked
+            against what the solver wrote.
+        reward_fn (callable): maps the trajectory, with any requested
+            functionObject output merged in, to one reward per control step.
+        controller_keys (str or sequence of str): where the controller block is
+            rendered, in 'folder__file__variable' form, e.g. '0__U__controller'.
+        function_objects (sequence of str): functionObject names read from each
+            case and aligned onto the control steps before reward_fn sees them.
+        extra_params (mapping or None): further template parameters merged into
+            every case.
+        run_fn (callable or None): executes a case, as run_fn(case_dir, params).
+            None runs the solver locally.
+        trajectory_reader (callable or None): custom parser for a solver that
+            writes trajectories in its own format.
+        on_partial ('keep' or 'drop'): what to do when a case fails but left a
+            usable partial trajectory behind. 'keep' passes it to reward_fn.
+    """
+
+    def __init__(
+        self,
+        simulator: OpenFOAMSimulator,
+        spec: PolicySpec,
+        reward_fn: RewardFn,
+        *,
+        controller_keys: str | Sequence[str],
+        function_objects: Sequence[str] = (),
+        extra_params: Mapping[str, Any] | None = None,
+        run_fn: RunFn | None = None,
+        trajectory_reader: Callable[[Path], tuple[dict[str, str], np.ndarray]] | None = None,
+        on_partial: str = "keep",
+    ) -> None:
+        self.simulator = simulator
+        self.spec = spec
+        self.reward_fn = reward_fn
+        self.controller_keys = (
+            [controller_keys] if isinstance(controller_keys, str) else list(controller_keys)
+        )
+        self.function_objects = list(function_objects)
+        self.extra_params = dict(extra_params or {})
+        self.run_fn = run_fn or self._run_locally
+        self.trajectory_reader = trajectory_reader
+
+        if on_partial not in ("keep", "drop"):
+            raise ValueError("on_partial must be 'keep' or 'drop'")
+        self.on_partial = on_partial
+
+    # gym vocabulary, for the parts of it that apply
+
+    @property
+    def observation_space(self):
+        import gymnasium as gym
+
+        return gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.spec.obs_dim,), dtype=np.float32
+        )
+
+    @property
+    def action_space(self):
+        import gymnasium as gym
+
+        return gym.spaces.Box(
+            low=np.asarray(self.spec.action.low, dtype=np.float32),
+            high=np.asarray(self.spec.action.high, dtype=np.float32),
+            dtype=np.float32,
+        )
+
+    def stub_env(self):
+        """
+        A gymnasium.Env carrying only the spaces.
+
+        stable-baselines3 needs an env object to build a model, even when the
+        rollouts come from somewhere else. This satisfies that and nothing more:
+        stepping it raises, rather than quietly returning data the solver never
+        produced.
+        """
+        import gymnasium as gym
+
+        spaces = (self.observation_space, self.action_space)
+        obs_dim = self.spec.obs_dim
+
+        class _SpacesOnlyEnv(gym.Env):
+            metadata: dict = {"render_modes": []}
+            observation_space, action_space = spaces
+
+            def reset(self, *, seed=None, options=None):
+                super().reset(seed=seed)
+                return np.zeros(obs_dim, dtype=np.float32), {}
+
+            def step(self, action):
+                raise NotImplementedError(
+                    "This environment only carries the observation and action "
+                    "spaces. Episodes are produced by ClosedLoopRunner.collect(), "
+                    "because under full handoff every action is chosen inside the "
+                    "solver and there is no per-step interaction to expose."
+                )
+
+        return _SpacesOnlyEnv()
+
+    # collection
+
+    def collect(
+        self,
+        artifact: PolicyArtifact,
+        n_episodes: int = 1,
+        *,
+        seeds: Sequence[int] | None = None,
+        iteration: int | None = None,
+        n_jobs: int = 1,
+        verbose: bool = False,
+    ) -> Rollout:
+        """
+        Run n_episodes with one frozen policy and return their experience.
+
+        Parameters:
+            artifact (PolicyArtifact): the exported policy. Its spec must match
+                the runner's, otherwise the cases and the policy disagree.
+            n_episodes (int): how many cases to run with this policy.
+            seeds (sequence of int or None): one RNG seed per episode, written
+                into the case and recorded in the trajectory so a run can be
+                replayed. None derives them from the iteration.
+            iteration (int): training iteration, used to name the run
+                directories. Falls back to the artifact's.
+            n_jobs (int): how many cases to run at once, on threads.
+
+        Returns:
+            Rollout
+        """
+        if artifact.spec.hash != self.spec.hash:
+            raise ValueError(
+                f"the policy implements contract {artifact.spec.hash} but the "
+                f"runner is configured for {self.spec.hash}"
+            )
+
+        iteration = iteration if iteration is not None else (artifact.iteration or 0)
+        if seeds is None:
+            seeds = [iteration * 100_000 + i for i in range(n_episodes)]
+        if len(seeds) != n_episodes:
+            raise ValueError(f"got {len(seeds)} seeds for {n_episodes} episodes")
+
+        policy_path = artifact.path.resolve()
+        jobs = list(enumerate(seeds))
+
+        def one(job: tuple[int, int]):
+            index, seed = job
+            return self._run_episode(index, int(seed), policy_path, iteration, verbose)
+
+        if n_jobs > 1:
+            with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+                results = list(pool.map(one, jobs))
+        else:
+            results = [one(job) for job in jobs]
+
+        rollout = Rollout(artifact=artifact)
+        for episode, failure in results:
+            if episode is not None:
+                rollout.episodes.append(episode)
+            if failure is not None:
+                rollout.failures.append(failure)
+
+        if rollout.failures:
+            logger.warning(
+                "%d of %d episodes failed: %s",
+                len(rollout.failures),
+                n_episodes,
+                "; ".join(str(f) for f in rollout.failures),
+            )
+        if not rollout.episodes:
+            raise RuntimeError(
+                f"all {n_episodes} episodes failed; nothing to learn from. "
+                + "; ".join(str(f) for f in rollout.failures)
+            )
+        return rollout
+
+    def _run_episode(
+        self,
+        index: int,
+        seed: int,
+        policy_path: Path,
+        iteration: int,
+        verbose: bool,
+    ) -> tuple[xr.Dataset | None, EpisodeFailure | None]:
+        case_dir = self.simulator.output_path / f"iter{iteration:04d}_ep{index:02d}"
+
+        params = dict(self.extra_params)
+        params.update(
+            controller_params(self.spec, policy_path, self.controller_keys, seed=seed)
+        )
+
+        diverged: str | None = None
+        try:
+            self.run_fn(case_dir, params)
+        except SolverDivergedError as exc:
+            diverged = f"solver exited with code {exc.returncode}"
+            logger.warning("Episode %d diverged in %s", index, case_dir)
+        except Exception as exc:  # a launcher failure is not a physics failure
+            return None, EpisodeFailure(index, case_dir, f"launch failed: {exc}")
+
+        try:
+            episode = self._read_episode(case_dir, seed, verbose)
+        except (TrajectoryError, FileNotFoundError) as exc:
+            reason = f"{diverged}; no usable trajectory" if diverged else str(exc)
+            return None, EpisodeFailure(index, case_dir, reason)
+        except Exception as exc:
+            return None, EpisodeFailure(index, case_dir, f"reward failed: {exc}")
+
+        if diverged:
+            if self.on_partial == "drop":
+                return None, EpisodeFailure(index, case_dir, diverged)
+            episode.attrs["diverged"] = True
+            return episode, EpisodeFailure(index, case_dir, f"{diverged}; partial kept")
+
+        episode.attrs["diverged"] = False
+        return episode, None
+
+    def _read_episode(self, case_dir: Path, seed: int, verbose: bool) -> xr.Dataset:
+        trajectory = read_trajectory(
+            case_dir, self.spec, reader=self.trajectory_reader
+        )
+
+        series = [read_function_object(case_dir, name) for name in self.function_objects]
+        data = attach(trajectory, *series) if series else trajectory
+
+        rewards = evaluate_reward(data, self.reward_fn)
+        data = data.assign(reward=("time", rewards))
+        data.attrs["seed"] = seed
+        data.attrs["case_dir"] = str(case_dir)
+
+        if verbose:
+            logger.info(
+                "%s: %d steps, return %.4g", case_dir.name, data.sizes["time"], rewards.sum()
+            )
+        return data
+
+    def _run_locally(self, case_dir: Path, params: dict[str, Any]) -> None:
+        run_simulation(
+            params=params,
+            exp_config={
+                "input_path": str(self.simulator.template_path),
+                "output_path": str(case_dir),
+                "solver": self.simulator.solver_script,
+            },
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"ClosedLoopRunner(obs_dim={self.spec.obs_dim}, "
+            f"act_dim={self.spec.act_dim}, spec_hash={self.spec.hash})"
+        )
