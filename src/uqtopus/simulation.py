@@ -144,14 +144,22 @@ def run_simulation(params: dict[str, float], exp_config: dict[str, Any], verbose
         ) from e
 
 
-def _process_random_sim(param_data: tuple[int, dict[str, float]], exp_config: dict[str, Any], verbose: bool = False) -> None:
+def _process_random_sim(
+    param_data: tuple[int, dict[str, float]],
+    exp_config: dict[str, Any],
+    verbose: bool = False,
+) -> tuple[int, str | None]:
     """
     Process a single simulation (helper function for randomized multiprocessing).
+
+    Returns:
+        Tuple of the sample index and the error message, the latter being None
+        when the simulation succeeded.
     """
     i, params = param_data
     exp_path = Path(exp_config.get('output_path', _DESTINATION_FOLDER))
     experiment_name = exp_path / f"sample_{i:04d}"
-    
+
     # Copy configuration to prevent mutating shared state across workers
     local_config = exp_config.copy()
     local_config['output_path'] = str(experiment_name)
@@ -163,7 +171,71 @@ def _process_random_sim(param_data: tuple[int, dict[str, float]], exp_config: di
             verbose=verbose
         )
     except Exception as e:
-        print(f"Error in sample {i}: {e}")
+        logger.error("Sample %d failed: %s: %s", i, type(e).__name__, e)
+        return i, f"{type(e).__name__}: {e}"
+
+    return i, None
+
+
+def _run_ensemble(
+    X: np.ndarray | list,
+    keys: list[str],
+    config: dict[str, Any],
+    nthreads: int = 1,
+    verbose: bool = False,
+) -> list[tuple[int, str]]:
+    """
+    Run one simulation per row of an experimental design, in parallel.
+
+    Parameters:
+        X: Experimental design, one row of parameter values per sample.
+        keys: Parameter names, in the same order as the columns of X.
+        config: Experiment configuration forwarded to run_simulation.
+        nthreads: Number of worker processes.
+        verbose: Whether to print the solver output of each run.
+
+    Returns:
+        List of (sample index, error message) for the samples that failed,
+        sorted by index. Empty when every sample succeeded.
+    """
+    process_func = partial(
+        _process_random_sim,
+        exp_config=config,
+        verbose=verbose
+    )
+
+    iparams = list(enumerate([dict(zip(keys, x)) for x in X]))
+
+    failures: list[tuple[int, str]] = []
+    with mp.get_context('spawn').Pool(nthreads) as pool:
+        for i, error in tqdm(
+            pool.imap_unordered(process_func, iparams),
+            total=len(iparams),
+            desc='Running simulations',
+            mininterval=1.0
+        ):
+            if error is not None:
+                failures.append((i, error))
+
+    failures.sort()
+    return failures
+
+
+def _report_failures(failures: list[tuple[int, str]], n_samples: int) -> None:
+    """
+    Print a summary of the samples that failed during an ensemble run.
+
+    Parameters:
+        failures: Output of _run_ensemble.
+        n_samples: Total number of samples in the experimental design.
+    """
+    if not failures:
+        return
+
+    logger.warning("%d of %d samples failed", len(failures), n_samples)
+    print(f"WARNING: {len(failures)} of {n_samples} samples failed.")
+    for i, error in failures:
+        print(f"  sample_{i:04d}: {error}")
 
 
 def uq_simulation(X: np.ndarray, Params: dict[str, Any]) -> None:
@@ -195,21 +267,9 @@ def uq_simulation(X: np.ndarray, Params: dict[str, Any]) -> None:
             raise ValueError('The number of sampled parameters passed must be equal to the number of the input columns in the experimental design X')
 
     nthreads = Params['nthreads'] if 'nthreads' in Params else 1
-    
-    process_func = partial(
-        _process_random_sim,
-        exp_config=Params
-    )
 
-    iparams = list(enumerate([dict(zip(keys, x)) for x in X]))
-    with mp.get_context('spawn').Pool(nthreads) as pool:
-        for _ in tqdm(
-            pool.imap_unordered(process_func, iparams),
-            total=len(iparams), 
-            desc='Running simulations',
-            mininterval=1.0
-        ):
-            pass
+    failures = _run_ensemble(X, keys, Params, nthreads)
+    _report_failures(failures, len(X))
 
     print(f"UQ study completed. Results saved in '{output_path}' folder")
 
@@ -243,20 +303,8 @@ def run_uq_study(config_file: str | Path, n_samples: int, verbose: bool = False)
     if keys is None:
         raise Exception("The parameter 'parameter_ranges' must be provided in the config file")
 
-    process_func = partial(
-        _process_random_sim,
-        exp_config=config
-    )
-
-    iparams = list(enumerate([dict(zip(keys, x)) for x in X]))
-    with mp.get_context('spawn').Pool(nthreads) as pool:
-        for _ in tqdm(
-            pool.imap_unordered(process_func, iparams),
-            total=len(iparams), 
-            desc='Running simulations',
-            mininterval=1.0
-        ):
-            pass
+    failures = _run_ensemble(X, list(keys), config, nthreads)
+    _report_failures(failures, len(X))
 
     if verbose:
         print(f"UQ study completed. Results saved in '{output_path}' folder")

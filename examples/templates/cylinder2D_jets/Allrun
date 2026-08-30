@@ -1,0 +1,18 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+# One episode. uqtopus renders the controller into 0.orig/U before this runs.
+
+[ -d constant/polyMesh ] || ./Allmesh
+
+if grep -q '^internalField[ 	]*uniform' 0.orig/U; then
+    echo "WARNING: 0.orig holds a uniform field, so this episode starts from"
+    echo "         rest instead of from saturated shedding. Run ./Allwarmup once."
+fi
+
+rm -rf 0 && cp -r 0.orig 0
+
+runApplication $(getApplication)
+#------------------------------------------------------------------------------

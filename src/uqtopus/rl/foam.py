@@ -111,7 +111,7 @@ def controller_mapping(
     spec: PolicySpec,
     policy: str | Path,
     *,
-    controller_type: str = "onnxPolicy",
+    controller_type: str = "uqtopusBoundaryCondition",
     seed: int | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -138,8 +138,8 @@ def controller_mapping(
         "low": list(spec.action.low),
         "high": list(spec.action.high),
         "targets": [
-            {"name": name, "coefficient": coefficient}
-            for name, coefficient in spec.action.targets
+            {"name": name, "component": index}
+            for index, name in enumerate(spec.action.targets)
         ],
     }
 
@@ -147,7 +147,6 @@ def controller_mapping(
         "type": controller_type,
         "policy": str(policy),
         "specHash": spec.hash,
-        "contractVersion": spec.contract_version,
         "controlInterval": spec.control_interval,
         "startTime": spec.start_time,
         "endTime": spec.end_time,
@@ -165,7 +164,7 @@ def render_controller(
     policy: str | Path,
     *,
     name: str | None = None,
-    controller_type: str = "onnxPolicy",
+    controller_type: str = "uqtopusBoundaryCondition",
     seed: int | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> str:

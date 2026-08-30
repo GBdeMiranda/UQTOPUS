@@ -32,8 +32,8 @@ _LOG_STD_MAX = 2.0
 
 def _require_torch():
     try:
-        import torch  # noqa: F401
-    except ImportError as exc:  # pragma: no cover - import guard
+        import torch
+    except ImportError as exc:
         raise ImportError(
             "PyTorch is required for the 'torch' and 'sb3' export backends. "
             "Install it with: pip install torch"
@@ -254,8 +254,15 @@ def _build_wrapper(net, spec: PolicySpec, normalization: Normalization):
     """
     Wrap a raw actor network so that the exported graph is self-contained.
 
-    The wrapped module takes raw observations and returns distribution
-    parameters, with normalization and the output transforms baked in.
+    Parameters:
+        net (Any): the actor module.
+        spec (PolicySpec): the contract the graph implements.
+        normalization (Normalization): statistics baked into the graph.
+
+    Returns:
+        torch.nn.Module taking (observation, noise) and returning the action
+        with a Gaussian action, or taking (observation) and returning the two
+        shape parameters with a Beta one.
     """
     torch = _require_torch()
 
@@ -263,18 +270,19 @@ def _build_wrapper(net, spec: PolicySpec, normalization: Normalization):
         def __init__(self) -> None:
             super().__init__()
             self.net = net
-            self.register_buffer(
-                "obs_mean",
-                torch.tensor(normalization.mean, dtype=torch.float32).unsqueeze(0),
-            )
-            self.register_buffer(
-                "obs_std",
-                torch.tensor(normalization.std, dtype=torch.float32).unsqueeze(0),
-            )
             self.act_dim = spec.act_dim
             self.distribution = spec.action.distribution
+            for name, values in (
+                ("obs_mean", normalization.mean),
+                ("obs_std", normalization.std),
+                ("action_low", spec.action.low),
+                ("action_high", spec.action.high),
+            ):
+                self.register_buffer(
+                    name, torch.tensor(values, dtype=torch.float32).unsqueeze(0)
+                )
 
-        def forward(self, observation):
+        def forward(self, observation, noise=None):
             x = (observation - self.obs_mean) / self.obs_std
             head = self.net(x)
             if isinstance(head, (tuple, list)):
@@ -295,9 +303,9 @@ def _build_wrapper(net, spec: PolicySpec, normalization: Normalization):
                 beta = torch.nn.functional.softplus(second) + 1.0
                 return alpha, beta
 
-            mean = first
             log_std = torch.clamp(second, _LOG_STD_MIN, _LOG_STD_MAX)
-            return mean, log_std
+            action = first + torch.exp(log_std) * noise
+            return torch.clamp(action, min=self.action_low, max=self.action_high)
 
     graph = _PolicyGraph()
     graph.eval()
@@ -346,8 +354,6 @@ def _looks_like_sb3(obj: Any) -> bool:
     return policy is not None and hasattr(policy, "mlp_extractor")
 
 
-# Metadata stamping
-
 def _torch_onnx_export(
     torch: Any,
     graph: Any,
@@ -359,19 +365,15 @@ def _torch_onnx_export(
 ) -> None:
     """
     Run torch.onnx.export across PyTorch versions.
-
-    PyTorch 2.9 made the dynamo exporter the default, and it needs the extra
-    'onnxscript' package. The older TorchScript exporter needs nothing beyond
-    torch itself and produces a flatter graph, which is friendlier to the simple
-    fallback runtime, so it is preferred while it exists.
     """
     import inspect
 
+    input_names = list(spec.input_names)
     kwargs: dict[str, Any] = {
-        "input_names": [spec.input_name],
+        "input_names": input_names,
         "output_names": output_names,
         "dynamic_axes": {
-            spec.input_name: {0: "batch"},
+            **{name: {0: "batch"} for name in input_names},
             **{name: {0: "batch"} for name in output_names},
         },
         "opset_version": opset,
@@ -390,13 +392,10 @@ def _torch_onnx_export(
     for attempt in attempts:
         try:
             with torch.no_grad(), warnings.catch_warnings():
-                # Choosing the TorchScript exporter is deliberate here, so its
-                # deprecation notice would only be noise on every export of a
-                # training run.
                 warnings.filterwarnings("ignore", category=DeprecationWarning)
                 torch.onnx.export(graph, dummy, str(path), **attempt)
             return
-        except Exception as exc:  # pragma: no cover - depends on torch build
+        except Exception as exc:
             last_error = exc
             logger.debug(
                 "torch.onnx.export failed with dynamo=%s: %s",
@@ -431,7 +430,6 @@ def read_metadata(path: str | Path) -> dict[str, str]:
 
 
 # Public API
-
 def export_policy(
     net: Any,
     spec: PolicySpec,
@@ -492,7 +490,9 @@ def export_policy(
 
     graph = _build_wrapper(actor, spec, normalization)
 
-    dummy = torch.zeros(1, spec.obs_dim, dtype=torch.float32)
+    dummy: tuple[Any, ...] = (torch.zeros(1, spec.obs_dim, dtype=torch.float32),)
+    if spec.noise_dim:
+        dummy += (torch.zeros(1, spec.noise_dim, dtype=torch.float32),)
     output_names = list(spec.output_names)
 
     _torch_onnx_export(torch, graph, dummy, path, spec, output_names, opset)
@@ -562,19 +562,52 @@ def export_random_policy(
     return export_policy(net, spec, path, **kwargs)
 
 
+class _TorchReference:
+    """
+    Numpy callable over the torch graph, matching the exported ONNX signature.
+
+    Parameters:
+        graph (Any): the wrapper module built by _build_wrapper().
+        noise_dim (int): number of noise components the graph expects, 0 for none.
+        torch (Any): the imported torch module.
+    """
+
+    def __init__(self, graph: Any, noise_dim: int, torch: Any) -> None:
+        self.graph = graph
+        self.noise_dim = noise_dim
+        self.torch = torch
+
+    def __call__(
+        self, obs: np.ndarray, noise: np.ndarray | None = None
+    ) -> tuple[np.ndarray, ...]:
+        args = [self.torch.tensor(np.asarray(obs, dtype=np.float32))]
+        if self.noise_dim:
+            if noise is None:
+                raise ValueError(
+                    "this spec declares a Gaussian action, so the reference "
+                    "needs the same noise the graph was given"
+                )
+            args.append(self.torch.tensor(np.asarray(noise, dtype=np.float32)))
+        with self.torch.no_grad():
+            out = self.graph(*args)
+        if isinstance(out, (tuple, list)):
+            return tuple(item.numpy() for item in out)
+        return (out.numpy(),)
+
+
 def torch_reference(net: Any, spec: PolicySpec, normalization: Normalization) -> Callable:
     """
     Build a numpy callable reproducing the exported graph from the torch module.
 
-    Used by validate_policy() as the reference side of the numerical parity
-    check: same input, torch and onnxruntime must agree.
+    Parameters:
+        net (Any): the actor module.
+        spec (PolicySpec): the contract the graph implements.
+        normalization (Normalization): statistics baked into the graph.
+
+    Returns:
+        Callable: takes (observation, noise) and returns the graph outputs as
+        numpy arrays.
     """
     torch = _require_torch()
     graph = _build_wrapper(net, spec, normalization)
-
-    def reference(obs: np.ndarray) -> tuple[np.ndarray, ...]:
-        with torch.no_grad():
-            out = graph(torch.tensor(np.asarray(obs, dtype=np.float32)))
-        return tuple(t.numpy() for t in out)
-
-    return reference
+    return _TorchReference(graph, spec.noise_dim, torch)

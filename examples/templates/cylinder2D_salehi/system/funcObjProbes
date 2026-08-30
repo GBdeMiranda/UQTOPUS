@@ -1,0 +1,15 @@
+
+probes
+{
+    type            probes;
+    libs            ("libsampling.so");
+    writeControl    timeStep;
+    writeInterval   1;
+    fixedLocations  true;
+    interpolationScheme cellPoint;
+    fields          (p);
+    probeLocations
+    (
+        #include "probes"
+    );
+}

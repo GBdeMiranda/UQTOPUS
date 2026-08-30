@@ -1,0 +1,39 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+# One-off: run uncontrolled from 0.scratch until the vortex shedding saturates,
+# then write that state into 0.orig. Every episode starts there, so no episode
+# pays for the transient again. The force history left in warmup/postProcessing
+# is the uncontrolled baseline the reward offset comes from.
+#
+# Runs in warmup/, a case built from the parts this needs, because 0.orig/U
+# carries a Jinja2 placeholder that OpenFOAM cannot read and system/controlDict
+# is the one an episode uses.
+
+[ -d constant/polyMesh ] || ./Allmesh
+
+rm -rf warmup
+mkdir -p warmup/system warmup/constant
+cp -r system/. warmup/system/
+cp -r constant/. warmup/constant/
+cp system/controlDict.warmup warmup/system/controlDict
+cp -r 0.scratch warmup/0
+
+( cd warmup && runApplication $(getApplication) ) || exit 1
+
+latest=$(foamListTimes -case warmup -latestTime)
+if [ -z "$latest" ]; then
+    echo "no time directory was written, look at warmup/log.pimpleFoam"
+    exit 1
+fi
+
+python3 tools/make_start_state.py "warmup/$latest" 0.orig
+
+# Everything the template holds is copied into every episode directory, so
+# warmup/ is pruned to the force history the baseline Cd is read from.
+find warmup -mindepth 1 -maxdepth 1 ! -name postProcessing ! -name 'log.*' \
+     -exec rm -rf {} +
+echo "warmup pruned to warmup/postProcessing, delete it once Cd is recorded"
+#------------------------------------------------------------------------------

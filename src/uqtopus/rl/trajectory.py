@@ -15,7 +15,7 @@ from typing import Callable, Sequence
 import numpy as np
 import xarray as xr
 
-from .spec import CONTRACT_VERSION, PolicySpec
+from .spec import PolicySpec
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,6 @@ def write_trajectory(
     columns = spec.trajectory_columns()[:-1]  # 'seed' lives in the header
     header = [
         "# uqtopus trajectory",
-        f"# contractVersion  {spec.contract_version}",
         f"# specHash         {spec.hash}",
         f"# seed             {'' if seed is None else seed}",
         f"# columns          {' '.join(columns)}",
@@ -135,6 +134,22 @@ def default_reader(path: Path) -> tuple[dict[str, str], np.ndarray]:
     return _parse_header(header_lines), np.asarray(rows, dtype=np.float64)
 
 
+def _start_time(path: Path) -> float:
+    """
+    Start time a trajectory file sits under, from its parent directory name.
+
+    Parameters:
+        path (Path): path to a trajectory file.
+
+    Returns:
+        float: the time, or infinity when the directory is not a number.
+    """
+    try:
+        return float(path.parent.name)
+    except ValueError:
+        return float("inf")
+
+
 def find_trajectory(case_dir: str | Path) -> Path:
     """
     Locate the trajectory file inside an OpenFOAM case directory.
@@ -152,13 +167,7 @@ def find_trajectory(case_dir: str | Path) -> Path:
     if not candidates:
         raise TrajectoryError(f"no {TRAJECTORY_NAME} found under {root}")
 
-    def start_time(p: Path) -> float:
-        try:
-            return float(p.parent.name)
-        except ValueError:
-            return float("inf")
-
-    return max(candidates, key=start_time)
+    return max(candidates, key=_start_time)
 
 
 def read_trajectory(
@@ -199,15 +208,6 @@ def read_trajectory(
         if strict:
             raise TrajectoryError(message)
         logger.warning(message)
-
-    version = header.get("contractVersion", "")
-    if version and version != CONTRACT_VERSION:
-        logger.warning(
-            "%s declares contract version %s, this build expects %s",
-            path,
-            version,
-            CONTRACT_VERSION,
-        )
 
     times = table[:, 0]
     if np.any(np.diff(times) <= 0):

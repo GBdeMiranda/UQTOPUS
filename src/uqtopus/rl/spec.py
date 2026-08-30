@@ -10,9 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, Sequence
-
-CONTRACT_VERSION = "1.0"
+from typing import Any, ClassVar, Literal, Mapping, Sequence
 
 Vec3 = tuple[float, float, float]
 
@@ -311,10 +309,12 @@ class ActionSpec:
 
     Parameters:
         name (str): action label, used in trajectory columns.
-        targets: what the action drives. A single patch/fvOption name, a
-            sequence of names, or a mapping of name to coefficient. Each target
-            receives `coefficient * action`, e.g. {'jet1': 1.0, 'jet2': -1.0}.
-        n_components (int): action dimension.
+        targets (str or sequence of str): what the action drives, in order.
+            Target i receives component i of the action, so the order here is
+            the order of the action vector, as it already is for low and high.
+            A single name is the one component case.
+        n_components (int or None): action dimension. None takes it from the
+            number of targets, which is the usual case.
         low, high (float or sequence of float): physical bounds, scalar or per component.
         distribution ('gaussian' or 'beta'): policy distribution family.
             Gaussian is the default; beta never leaves the bounds and needs no
@@ -325,17 +325,25 @@ class ActionSpec:
     """
 
     name: str
-    targets: str | Sequence[str] | Sequence[tuple[str, float]] | dict[str, float]
+    targets: Any
     low: float | Sequence[float]
     high: float | Sequence[float]
-    n_components: int = 1
+    n_components: int | None = None
     distribution: Literal["gaussian", "beta"] = "gaussian"
     ramp_fraction: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.n_components < 1:
-            raise ValueError("ActionSpec.n_components must be >= 1")
-        object.__setattr__(self, "targets", self._normalize_targets(self.targets))
+        targets = self._normalize_targets(self.targets)
+        object.__setattr__(self, "targets", targets)
+
+        n_components = len(targets) if self.n_components is None else self.n_components
+        if n_components != len(targets):
+            raise ValueError(
+                f"the action declares {n_components} components but has "
+                f"{len(targets)} target(s) {list(targets)}; one target drives "
+                "one component"
+            )
+        object.__setattr__(self, "n_components", n_components)
 
         low = self._broadcast(self.low, "low")
         high = self._broadcast(self.high, "high")
@@ -355,24 +363,14 @@ class ActionSpec:
             )
 
     @staticmethod
-    def _normalize_targets(value: Any) -> tuple[tuple[str, float], ...]:
-        if isinstance(value, str):
-            pairs = ((value, 1.0),)
-        elif isinstance(value, dict):
-            pairs = tuple((str(k), float(v)) for k, v in value.items())
-        else:
-            pairs = tuple(
-                (str(item), 1.0)
-                if isinstance(item, str)
-                else (str(item[0]), float(item[1]))
-                for item in value
-            )
-        if not pairs:
+    def _normalize_targets(value: Any) -> tuple[str, ...]:
+        """Bring the targets to a tuple of names, in action component order."""
+        names = (value,) if isinstance(value, str) else tuple(str(v) for v in value)
+        if not names:
             raise ValueError("ActionSpec requires at least one target")
-        names = [name for name, _ in pairs]
         if len(set(names)) != len(names):
-            raise ValueError(f"ActionSpec has duplicate targets: {names}")
-        return pairs
+            raise ValueError(f"ActionSpec has duplicate targets: {list(names)}")
+        return names
 
     def _broadcast(self, value: Any, label: str) -> tuple[float, ...]:
         if isinstance(value, (int, float)):
@@ -396,12 +394,12 @@ class ActionSpec:
 
     @property
     def target_names(self) -> list[str]:
-        return [name for name, _ in self.targets]
+        return list(self.targets)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
-            "targets": [[name, coefficient] for name, coefficient in self.targets],
+            "targets": list(self.targets),
             "n_components": self.n_components,
             "low": list(self.low),
             "high": list(self.high),
@@ -412,7 +410,7 @@ class ActionSpec:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionSpec":
         payload = dict(data)
-        payload["targets"] = [tuple(t) for t in payload["targets"]]
+        payload["targets"] = tuple(payload["targets"])
         return cls(**payload)
 
 
@@ -431,7 +429,6 @@ class PolicySpec:
             runs uncontrolled (warm start from a developed base state).
         end_time (float or None): time at which control stops. None means the
             end of the run.
-        contract_version (str): bumped on breaking changes to the file formats.
     """
 
     observation: ObservationSpec
@@ -439,7 +436,6 @@ class PolicySpec:
     control_interval: float
     start_time: float = 0.0
     end_time: float | None = None
-    contract_version: str = CONTRACT_VERSION
 
     def __post_init__(self) -> None:
         if self.control_interval <= 0:
@@ -456,19 +452,26 @@ class PolicySpec:
         return self.action.dim
 
     @property
+    def input_names(self) -> tuple[str, ...]:
+        """ONNX input names implied by the distribution family."""
+        if self.action.distribution == "beta":
+            return ("observation",)
+        return ("observation", "noise")
+
+    @property
     def output_names(self) -> tuple[str, ...]:
         """ONNX output names implied by the distribution family."""
         if self.action.distribution == "beta":
             return ("alpha", "beta")
-        return ("mean", "log_std")
+        return ("action",)
 
     @property
-    def input_name(self) -> str:
-        return "observation"
+    def noise_dim(self) -> int:
+        """Number of standard normal values the solver must supply per step."""
+        return self.act_dim if self.action.distribution == "gaussian" else 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "contract_version": self.contract_version,
             "observation": self.observation.to_dict(),
             "action": self.action.to_dict(),
             "control_interval": self.control_interval,
@@ -484,7 +487,6 @@ class PolicySpec:
             control_interval=float(data["control_interval"]),
             start_time=float(data.get("start_time", 0.0)),
             end_time=data.get("end_time"),
-            contract_version=data.get("contract_version", CONTRACT_VERSION),
         )
 
     def to_json(self, indent: int | None = None) -> str:
@@ -515,7 +517,6 @@ class PolicySpec:
         parser.
         """
         return {
-            "uqtopus.contract_version": self.contract_version,
             "uqtopus.spec_hash": self.hash,
             "uqtopus.spec": self.to_json(),
             "uqtopus.obs_dim": str(self.obs_dim),
@@ -527,7 +528,7 @@ class PolicySpec:
             "uqtopus.start_time": str(self.start_time),
             "uqtopus.ramp_fraction": str(self.action.ramp_fraction),
             "uqtopus.action_targets": " ".join(
-                f"{name}:{coefficient}" for name, coefficient in self.action.targets
+                f"{name}:{i}" for i, name in enumerate(self.action.targets)
             ),
         }
 
@@ -548,31 +549,6 @@ class PolicySpec:
             + self.action.component_names()
             + ["seed"]
         )
-
-    def foam_context(self) -> dict[str, Any]:
-        """
-        Jinja2 render context for the OpenFOAM controller dictionary.
-
-        Deliberately generic: 'controller' is a pluggable slot, so that an MPC
-        controller can reuse the same observation/action plumbing later without
-        a second dictionary format.
-        """
-        return {
-            "controller": {
-                "type": "onnxPolicy",
-                "specHash": self.hash,
-                "contractVersion": self.contract_version,
-                "controlInterval": self.control_interval,
-                "startTime": self.start_time,
-                "endTime": self.end_time,
-                "observation": {
-                    "stack": self.observation.stack,
-                    "dim": self.obs_dim,
-                    "sources": [s.to_dict() for s in self.observation.sources],
-                },
-                "action": self.action.to_dict(),
-            }
-        }
 
     def __repr__(self) -> str:
         return (

@@ -25,39 +25,66 @@ Built on top of `Jinja2`, `xarray` and `fluidfoam`.
 
 ## Installation
 
-### OpenFOAM Installation
+### OpenFOAM
 
-For Ubuntu/Debian systems:
+UQTOPUS targets OpenFOAM 9 from the OpenFOAM Foundation (openfoam.org). The case templates and the `uqtopusPolicy` library use that lineage's dialect.
+
 ```bash
 sudo sh -c "wget -O - https://dl.openfoam.org/gpg.key | apt-key add -"
 sudo add-apt-repository http://dl.openfoam.org/ubuntu
 sudo apt-get update
 sudo apt-get -y install openfoam9
-```
-
-Source OpenFOAM environment:
-```bash
 source /opt/openfoam9/etc/bashrc
 ```
 
-For other systems, visit: https://openfoam.org/download/
+### Python package
 
-### Requirements
+```bash
+pip install uqtopus
+```
 
-- Python 3.9+
-- OpenFOAM 9+ (for running actual simulations)
+Requires Python 3.9 or newer.
 
-### Setup
+## Closed-loop RL: the ONNX boundary condition
 
-1. Install Python package:
-   ```bash
-   pip install uqtopus
-   ```
+Needed only for `uqtopus.rl`, where the policy runs inside the solver. `uqtopusPolicy/` builds a shared library that stock `pimpleFoam` loads through the `libs()` line of `controlDict`, adding the `uqtopusBoundaryCondition` boundary condition. The solver itself is not modified.
 
-2. Ensure OpenFOAM is installed and sourced:
-   ```bash
-   source /opt/openfoam9/etc/bashrc  # Adjust path as needed
-   ```
+### 1. Python extras
+
+```bash
+pip install "uqtopus[rl]"
+```
+
+### 2. ONNX Runtime
+
+The library links against the C++ runtime. Version 1.15 or newer, for opset 17.
+
+```bash
+mkdir -p ~/opt && cd ~/opt
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-linux-x64-1.17.3.tgz
+tar xzf onnxruntime-linux-x64-1.17.3.tgz
+echo 'export ONNXRUNTIME_ROOT=$HOME/opt/onnxruntime-linux-x64-1.17.3' >> ~/.bashrc
+```
+
+### 3. Build the library
+
+```bash
+source /opt/openfoam9/etc/bashrc
+cd uqtopusPolicy
+wmake libso
+ls $FOAM_USER_LIBBIN/libuqtopusPolicy.so
+```
+
+### 4. Use it in a case
+
+`system/controlDict` loads the library:
+
+```
+application     pimpleFoam;
+libs            ("libuqtopusPolicy.so");
+```
+
+The controlled patch of `0/U` carries the block that `uqtopus.rl.render_controller()` produces. See `examples/07_cylinder2D_jets.ipynb` for the whole loop and `uqtopusPolicy/README.md` for the library.
 
 ## Basic Usage
 
@@ -129,6 +156,7 @@ UQTOPUS/
 │   │       ├── sample_002/   # OpenFOAM case for sample 2
 │   │       └── ...
 │   └── config.yaml           # Configuration file for examples
+├── uqtopusPolicy/            # OpenFOAM library: the ONNX boundary condition
 └── README.md                 # This file
 ```
 

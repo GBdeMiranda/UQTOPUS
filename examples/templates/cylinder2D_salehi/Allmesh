@@ -1,0 +1,18 @@
+#!/bin/sh
+cd "${0%/*}" || exit                                # Run from this directory
+. ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
+#------------------------------------------------------------------------------
+
+# blockMesh builds only the y >= 0 half. mirrorMesh completes the domain and,
+# with it, the second jet. createPatch drops the patches the mirror made empty.
+
+rm -rf 0 constant/polyMesh log.blockMesh log.mirrorMesh log.createPatch
+
+runApplication blockMesh
+
+runApplication mirrorMesh -overwrite
+
+runApplication createPatch -overwrite
+
+runApplication checkMesh -constant
+#------------------------------------------------------------------------------

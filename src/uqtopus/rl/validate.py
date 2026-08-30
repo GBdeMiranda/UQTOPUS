@@ -77,6 +77,22 @@ class ValidationReport:
         return f"ValidationReport(ok={self.ok}, checks={len(self.checks)})"
 
 
+def _bail(report: ValidationReport, strict: bool) -> ValidationReport:
+    """
+    End a validation early.
+
+    Parameters:
+        report (ValidationReport): the report collected so far.
+        strict (bool): raise instead of returning when the report has errors.
+
+    Returns:
+        ValidationReport: the report, when strict is False or it is clean.
+    """
+    if strict:
+        report.raise_for_status()
+    return report
+
+
 def validate_policy(
     policy: str | Path | PolicyArtifact,
     spec: PolicySpec | None = None,
@@ -113,22 +129,17 @@ def validate_policy(
     path = Path(artifact.path if artifact else policy)
     report = ValidationReport(path=path)
 
-    def bail() -> ValidationReport:
-        if strict:
-            report.raise_for_status()
-        return report
-
     # --- the file is a readable ONNX model -------------------------------
     if not path.exists():
         report.add("file", "error", f"{path} does not exist")
-        return bail()
+        return _bail(report, strict)
 
     try:
         model = onnx.load(str(path))
         onnx.checker.check_model(model)
     except Exception as exc:
         report.add("file", "error", f"not a valid ONNX model: {exc}")
-        return bail()
+        return _bail(report, strict)
     report.add("file", "ok", f"valid ONNX model, {path.stat().st_size} bytes")
 
     # --- it declares which contract it implements ------------------------
@@ -160,45 +171,52 @@ def validate_policy(
     effective = spec or embedded
     if effective is None:
         report.add("contract", "error", "no spec available to validate against")
-        return bail()
+        return _bail(report, strict)
 
     # --- the signature matches the contract ------------------------------
     initializers = {init.name for init in model.graph.initializer}
     inputs = [i for i in model.graph.input if i.name not in initializers]
+    declared = list(effective.input_names)
+    widths = {"observation": effective.obs_dim, "noise": effective.noise_dim}
 
-    if len(inputs) != 1 or inputs[0].name != effective.input_name:
+    if [i.name for i in inputs] != declared:
         report.add(
             "signature.input",
             "error",
-            f"expected a single input named {effective.input_name!r}, "
-            f"found {[i.name for i in inputs]}",
+            f"inputs are {[i.name for i in inputs]}, expected {declared} for "
+            f"distribution {effective.action.distribution!r}",
         )
     else:
-        tensor = inputs[0].type.tensor_type
         problems = []
-        if tensor.elem_type != onnx.TensorProto.FLOAT:
-            problems.append(
-                f"dtype is {onnx.TensorProto.DataType.Name(tensor.elem_type)}, expected float32"
-            )
-        dims = tensor.shape.dim
-        if len(dims) != 2:
-            problems.append(f"rank is {len(dims)}, expected 2 (batch, obs_dim)")
-        else:
+        for item in inputs:
+            tensor = item.type.tensor_type
+            width = widths[item.name]
+            if tensor.elem_type != onnx.TensorProto.FLOAT:
+                problems.append(
+                    f"{item.name} dtype is "
+                    f"{onnx.TensorProto.DataType.Name(tensor.elem_type)}, expected float32"
+                )
+            dims = tensor.shape.dim
+            if len(dims) != 2:
+                problems.append(f"{item.name} rank is {len(dims)}, expected 2")
+                continue
             if not dims[0].dim_param:
                 problems.append(
-                    f"the batch axis is fixed at {dims[0].dim_value}; the solver "
-                    "evaluates one observation and the update evaluates batches"
+                    f"{item.name} has its batch axis fixed at {dims[0].dim_value}; "
+                    "the solver evaluates one row and the update evaluates batches"
                 )
-            if dims[1].dim_value and dims[1].dim_value != effective.obs_dim:
+            if dims[1].dim_value and dims[1].dim_value != width:
                 problems.append(
-                    f"takes {dims[1].dim_value} components, spec declares "
-                    f"obs_dim={effective.obs_dim}"
+                    f"{item.name} takes {dims[1].dim_value} components, the spec "
+                    f"declares {width}"
                 )
         if problems:
             report.add("signature.input", "error", "; ".join(problems))
         else:
             report.add(
-                "signature.input", "ok", f"float32 (batch, {effective.obs_dim})"
+                "signature.input",
+                "ok",
+                ", ".join(f"{name} (batch, {widths[name]})" for name in declared),
             )
 
     expected = list(effective.output_names)
@@ -216,18 +234,21 @@ def validate_policy(
     # --- it loads and runs -----------------------------------------------
     try:
         session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
-        input_name = session.get_inputs()[0].name
     except Exception as exc:
         report.add("runtime", "error", f"onnxruntime failed to load the graph: {exc}")
-        return bail()
+        return _bail(report, strict)
 
     rng = np.random.default_rng(seed)
     obs = rng.normal(0.0, obs_scale, (n_samples, effective.obs_dim)).astype(np.float32)
+    noise = rng.standard_normal((n_samples, effective.act_dim)).astype(np.float32)
+    feed = {"observation": obs}
+    if effective.noise_dim:
+        feed["noise"] = noise
     try:
-        outputs = session.run(None, {input_name: obs})
+        outputs = session.run(None, feed)
     except Exception as exc:
         report.add("runtime", "error", f"forward pass failed: {exc}")
-        return bail()
+        return _bail(report, strict)
     report.add("runtime", "ok", f"batch of {n_samples} evaluated")
 
     # --- the outputs are usable -------------------------------------------
@@ -248,6 +269,20 @@ def validate_policy(
             "ok",
             ", ".join(f"{n} in [{a.min():.3g}, {a.max():.3g}]" for n, a in zip(actual, outputs)),
         )
+
+    if effective.action.distribution == "gaussian" and len(outputs) == 1:
+        action = outputs[0]
+        low = np.asarray(effective.action.low, dtype=np.float64)
+        high = np.asarray(effective.action.high, dtype=np.float64)
+        if np.any(action < low - tolerance) or np.any(action > high + tolerance):
+            report.add(
+                "bounds",
+                "error",
+                f"the graph returned actions outside [{low}, {high}]; the clip "
+                "is missing or the bounds were not baked in",
+            )
+        else:
+            report.add("bounds", "ok", f"actions within [{low}, {high}]")
 
     if effective.action.distribution == "beta" and len(outputs) == 2:
         alpha, beta = outputs
@@ -278,7 +313,9 @@ def validate_policy(
         )
     else:
         try:
-            ref_outputs = reference(obs)
+            ref_outputs = (
+                reference(obs, noise) if effective.noise_dim else reference(obs)
+            )
         except Exception as exc:
             report.add("parity", "error", f"the reference raised: {exc}")
         else:

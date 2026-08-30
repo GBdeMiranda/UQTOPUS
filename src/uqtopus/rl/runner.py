@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from itertools import repeat
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -180,12 +181,10 @@ class ClosedLoopRunner:
 
     def stub_env(self):
         """
-        A gymnasium.Env carrying only the spaces.
+        Build a gymnasium.Env carrying only the observation and action spaces.
 
-        stable-baselines3 needs an env object to build a model, even when the
-        rollouts come from somewhere else. This satisfies that and nothing more:
-        stepping it raises, rather than quietly returning data the solver never
-        produced.
+        Returns:
+            gymnasium.Env: reset() returns a zero observation, step() raises.
         """
         import gymnasium as gym
 
@@ -202,10 +201,8 @@ class ClosedLoopRunner:
 
             def step(self, action):
                 raise NotImplementedError(
-                    "This environment only carries the observation and action "
-                    "spaces. Episodes are produced by ClosedLoopRunner.collect(), "
-                    "because under full handoff every action is chosen inside the "
-                    "solver and there is no per-step interaction to expose."
+                    "this environment carries only the spaces; use "
+                    "ClosedLoopRunner.collect() to produce episodes"
                 )
 
         return _SpacesOnlyEnv()
@@ -252,17 +249,26 @@ class ClosedLoopRunner:
             raise ValueError(f"got {len(seeds)} seeds for {n_episodes} episodes")
 
         policy_path = artifact.path.resolve()
-        jobs = list(enumerate(seeds))
-
-        def one(job: tuple[int, int]):
-            index, seed = job
-            return self._run_episode(index, int(seed), policy_path, iteration, verbose)
+        indices = range(n_episodes)
+        values = [int(seed) for seed in seeds]
 
         if n_jobs > 1:
             with ThreadPoolExecutor(max_workers=n_jobs) as pool:
-                results = list(pool.map(one, jobs))
+                results = list(
+                    pool.map(
+                        self._run_episode,
+                        indices,
+                        values,
+                        repeat(policy_path),
+                        repeat(iteration),
+                        repeat(verbose),
+                    )
+                )
         else:
-            results = [one(job) for job in jobs]
+            results = [
+                self._run_episode(index, seed, policy_path, iteration, verbose)
+                for index, seed in zip(indices, values)
+            ]
 
         rollout = Rollout(artifact=artifact)
         for episode, failure in results:

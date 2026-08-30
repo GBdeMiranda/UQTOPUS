@@ -8,7 +8,6 @@ See docs/rl_intrusive_design.md for the design rationale.
 """
 
 from .spec import (
-    CONTRACT_VERSION,
     ActionSpec,
     CustomSource,
     ForceCoeffSource,
@@ -49,7 +48,6 @@ from .runner import ClosedLoopRunner, EpisodeFailure, Rollout
 from .validate import ValidationReport, validate_export, validate_policy
 
 __all__ = [
-    "CONTRACT_VERSION",
     "ActionSpec",
     "ClosedLoopRunner",
     "CustomSource",

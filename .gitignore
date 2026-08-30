@@ -70,3 +70,11 @@ var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
+
+# OpenFOAM build artifacts and case output
+**/Make/linux*/
+**/Make/darwin*/
+lnInclude/
+*.dep
+processor*/
+postProcessing/
