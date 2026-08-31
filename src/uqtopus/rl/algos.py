@@ -39,6 +39,7 @@ class PPO(sb3.PPO):
             statistics into that iteration's graph.
         validate (bool): check every exported policy against the contract before
             it reaches a solver.
+        **kwargs: passed to stable-baselines3. Device defaults to 'cpu'.
     """
 
     def __init__(
@@ -65,6 +66,7 @@ class PPO(sb3.PPO):
         # divisibility warning quiet.
         kwargs.setdefault("batch_size", 64)
         kwargs.setdefault("n_steps", kwargs["batch_size"])
+        kwargs.setdefault("device", "cpu")
 
         super().__init__(policy, runner.stub_env(), **kwargs)
 

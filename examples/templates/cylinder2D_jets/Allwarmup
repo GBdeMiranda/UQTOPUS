@@ -32,8 +32,9 @@ fi
 python3 tools/make_start_state.py "warmup/$latest" 0.orig
 
 # Everything the template holds is copied into every episode directory, so
-# warmup/ is pruned to the force history the baseline Cd is read from.
-find warmup -mindepth 1 -maxdepth 1 ! -name postProcessing ! -name 'log.*' \
-     -exec rm -rf {} +
+# warmup/ is pruned to the force history the baseline Cd is read from. The
+# solver log goes with the rest: it runs to tens of megabytes and no episode
+# has any use for it.
+find warmup -mindepth 1 -maxdepth 1 ! -name postProcessing -exec rm -rf {} +
 echo "warmup pruned to warmup/postProcessing, delete it once Cd is recorded"
 #------------------------------------------------------------------------------

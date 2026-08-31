@@ -38,6 +38,7 @@ rl = [
     "stable-baselines3>=2.0.0,<3.0.0",
     "onnx>=1.15.0",
     "onnxruntime>=1.17.0",
+    "onnxscript>=0.1.0",
 ]
 test = [
     "setuptools>=75.1.0",

@@ -237,6 +237,13 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _module_device(module: Any) -> torch.device:
+    """Device the module's parameters live on, CPU when it has none."""
+    for parameter in module.parameters():
+        return parameter.device
+    return torch.device("cpu")
+
+
 # Graph wrapper (torch backend)
 
 class _PolicyGraph(torch.nn.Module):
@@ -257,6 +264,7 @@ class _PolicyGraph(torch.nn.Module):
         self.net = net
         self.act_dim = spec.act_dim
         self.distribution = spec.action.distribution
+        device = _module_device(net)
         for name, values in (
             ("obs_mean", normalization.mean),
             ("obs_std", normalization.std),
@@ -264,7 +272,8 @@ class _PolicyGraph(torch.nn.Module):
             ("action_high", spec.action.high),
         ):
             self.register_buffer(
-                name, torch.tensor(values, dtype=torch.float32).unsqueeze(0)
+                name,
+                torch.tensor(values, dtype=torch.float32, device=device).unsqueeze(0),
             )
 
     def forward(self, observation, noise=None):
@@ -370,7 +379,7 @@ def _torch_onnx_export(
     else:
         attempts.append(kwargs)
 
-    last_error: Exception | None = None
+    failures: list[tuple[Any, Exception]] = []
     for attempt in attempts:
         try:
             with torch.no_grad(), warnings.catch_warnings():
@@ -378,18 +387,20 @@ def _torch_onnx_export(
                 torch.onnx.export(graph, dummy, str(path), **attempt)
             return
         except Exception as exc:
-            last_error = exc
+            failures.append((attempt.get("dynamo"), exc))
             logger.debug(
                 "torch.onnx.export failed with dynamo=%s: %s",
                 attempt.get("dynamo"),
                 exc,
             )
 
+    report = "; ".join(
+        f"dynamo={flag}: {type(exc).__name__}: {exc}" for flag, exc in failures
+    )
     raise RuntimeError(
-        "torch.onnx.export failed with every available exporter. On PyTorch 2.9+ "
-        "the dynamo exporter requires 'onnxscript' (pip install onnxscript). "
-        f"Last error: {last_error}"
-    ) from last_error
+        "torch.onnx.export failed with every available exporter. The dynamo one "
+        "needs 'onnxscript' (pip install onnxscript). Failures: " + report
+    ) from failures[-1][1]
 
 
 def _stamp_metadata(path: Path, spec: PolicySpec, extra: dict[str, str]) -> None:
@@ -470,9 +481,12 @@ def export_policy(
 
     graph = _PolicyGraph(actor, spec, normalization).eval()
 
-    dummy: tuple[Any, ...] = (torch.zeros(1, spec.obs_dim, dtype=torch.float32),)
+    device = _module_device(graph)
+    dummy: tuple[Any, ...] = (
+        torch.zeros(1, spec.obs_dim, dtype=torch.float32, device=device),
+    )
     if spec.noise_dim:
-        dummy += (torch.zeros(1, spec.noise_dim, dtype=torch.float32),)
+        dummy += (torch.zeros(1, spec.noise_dim, dtype=torch.float32, device=device),)
     output_names = list(spec.output_names)
 
     _torch_onnx_export(graph, dummy, path, spec, output_names, opset)
@@ -557,19 +571,20 @@ class _TorchReference:
     def __call__(
         self, obs: np.ndarray, noise: np.ndarray | None = None
     ) -> tuple[np.ndarray, ...]:
-        args = [torch.tensor(np.asarray(obs, dtype=np.float32))]
+        device = _module_device(self.graph)
+        args = [torch.tensor(np.asarray(obs, dtype=np.float32), device=device)]
         if self.noise_dim:
             if noise is None:
                 raise ValueError(
                     "this spec declares a Gaussian action, so the reference "
                     "needs the same noise the graph was given"
                 )
-            args.append(torch.tensor(np.asarray(noise, dtype=np.float32)))
+            args.append(torch.tensor(np.asarray(noise, dtype=np.float32), device=device))
         with torch.no_grad():
             out = self.graph(*args)
         if isinstance(out, (tuple, list)):
-            return tuple(item.numpy() for item in out)
-        return (out.numpy(),)
+            return tuple(item.cpu().numpy() for item in out)
+        return (out.cpu().numpy(),)
 
 
 def torch_reference(net: Any, spec: PolicySpec, normalization: Normalization) -> Callable:
