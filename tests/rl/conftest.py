@@ -28,16 +28,16 @@ from uqtopus.rl.runner import ClosedLoopRunner  # noqa: E402
 N_STEPS = 8
 
 PROBES = ProbeSource(field_name="p", positions=[(0.5, 0.0, 0.005), (1.0, 0.0, 0.005)])
-JETS = ActionSpec(name="Q", targets={"jet1": 1.0, "jet2": -1.0}, low=-0.1, high=0.1)
+JETS = ActionSpec(name="Q", targets="jet", low=-0.1, high=0.1)
 
 
 def make_spec(
-    sources=(PROBES,), stack=1, action=JETS, control_interval=0.4, start_time=0.0,
+    sources=(PROBES,), action=JETS, control_interval=0.4, start_time=0.0,
     end_time=None,
 ) -> PolicySpec:
     """Two probes in the wake driving a pair of jets with zero net flow."""
     return PolicySpec(
-        observation=ObservationSpec(sources=sources, stack=stack),
+        observation=ObservationSpec(sources=sources),
         action=action,
         control_interval=control_interval,
         start_time=start_time,
