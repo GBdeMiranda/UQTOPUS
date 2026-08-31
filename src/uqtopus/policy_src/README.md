@@ -1,4 +1,4 @@
-# uqtopusPolicy
+# policy_src
 
 Two classes compiled into one OpenFOAM library, `libuqtopusPolicy.so`. The solver loads the library and finds a new boundary condition type in it.
 
@@ -70,7 +70,7 @@ echo 'export ONNXRUNTIME_ROOT=$HOME/opt/onnxruntime-linux-x64-1.17.3' >> ~/.bash
 ```bash
 source /opt/openfoam9/etc/bashrc         # wherever yours lives
 export ONNXRUNTIME_ROOT=$HOME/opt/onnxruntime-linux-x64-1.17.3
-cd uqtopusPolicy
+cd src/uqtopus/policy_src
 wmake libso
 ```
 

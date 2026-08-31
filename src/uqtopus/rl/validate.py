@@ -21,9 +21,6 @@ from .spec import PolicySpec
 
 logger = logging.getLogger(__name__)
 
-_LEVELS = ("ok", "warning", "error")
-
-
 @dataclass
 class Check:
     """One validation result."""
@@ -49,8 +46,6 @@ class ValidationReport:
     checks: list[Check] = field(default_factory=list)
 
     def add(self, name: str, level: str, message: str) -> None:
-        if level not in _LEVELS:
-            raise ValueError(f"Unknown level {level!r}")
         self.checks.append(Check(name, level, message))
 
     @property
@@ -66,28 +61,9 @@ class ValidationReport:
             details = "\n".join(f"  - {c.name}: {c.message}" for c in self.errors)
             raise ValueError(f"Policy validation failed for {self.path}:\n{details}")
 
-    def __str__(self) -> str:
-        status = "OK" if self.ok else f"FAILED ({len(self.errors)} error(s))"
-        return "\n".join(
-            [f"Policy validation: {self.path}", f"Status: {status}", ""]
-            + [str(c) for c in self.checks]
-        )
-
-    def __repr__(self) -> str:
-        return f"ValidationReport(ok={self.ok}, checks={len(self.checks)})"
-
 
 def _bail(report: ValidationReport, strict: bool) -> ValidationReport:
-    """
-    End a validation early.
-
-    Parameters:
-        report (ValidationReport): the report collected so far.
-        strict (bool): raise instead of returning when the report has errors.
-
-    Returns:
-        ValidationReport: the report, when strict is False or it is clean.
-    """
+    """Raise when strict, otherwise hand the report back."""
     if strict:
         report.raise_for_status()
     return report

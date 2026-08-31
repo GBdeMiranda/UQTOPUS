@@ -9,6 +9,7 @@ PolicyArtifact.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import warnings
@@ -19,6 +20,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 import onnx
+import torch
 
 from .spec import PolicySpec
 
@@ -28,19 +30,6 @@ DEFAULT_OPSET = 17
 
 _LOG_STD_MIN = -5.0
 _LOG_STD_MAX = 2.0
-
-
-def _require_torch():
-    try:
-        import torch
-    except ImportError as exc:
-        raise ImportError(
-            "PyTorch is required for the 'torch' and 'sb3' export backends. "
-            "Install it with: pip install torch"
-        ) from exc
-    import torch
-
-    return torch
 
 
 # Frozen normalization snapshot
@@ -250,72 +239,84 @@ def _sha256(path: Path) -> str:
 
 # Graph wrapper (torch backend)
 
-def _build_wrapper(net, spec: PolicySpec, normalization: Normalization):
+class _PolicyGraph(torch.nn.Module):
     """
-    Wrap a raw actor network so that the exported graph is self-contained.
+    Self-contained graph: normalization, the actor, and the output transform.
+
+    Takes (observation, noise) and returns the action with a Gaussian action,
+    or takes (observation) and returns the two shape parameters with a Beta one.
 
     Parameters:
         net (Any): the actor module.
         spec (PolicySpec): the contract the graph implements.
         normalization (Normalization): statistics baked into the graph.
-
-    Returns:
-        torch.nn.Module taking (observation, noise) and returning the action
-        with a Gaussian action, or taking (observation) and returning the two
-        shape parameters with a Beta one.
     """
-    torch = _require_torch()
 
-    class _PolicyGraph(torch.nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.net = net
-            self.act_dim = spec.act_dim
-            self.distribution = spec.action.distribution
-            for name, values in (
-                ("obs_mean", normalization.mean),
-                ("obs_std", normalization.std),
-                ("action_low", spec.action.low),
-                ("action_high", spec.action.high),
-            ):
-                self.register_buffer(
-                    name, torch.tensor(values, dtype=torch.float32).unsqueeze(0)
+    def __init__(self, net: Any, spec: PolicySpec, normalization: Normalization) -> None:
+        super().__init__()
+        self.net = net
+        self.act_dim = spec.act_dim
+        self.distribution = spec.action.distribution
+        for name, values in (
+            ("obs_mean", normalization.mean),
+            ("obs_std", normalization.std),
+            ("action_low", spec.action.low),
+            ("action_high", spec.action.high),
+        ):
+            self.register_buffer(
+                name, torch.tensor(values, dtype=torch.float32).unsqueeze(0)
+            )
+
+    def forward(self, observation, noise=None):
+        x = (observation - self.obs_mean) / self.obs_std
+        head = self.net(x)
+        if isinstance(head, (tuple, list)):
+            if len(head) != 2:
+                raise ValueError(
+                    "A policy network returning a tuple must return exactly "
+                    f"two tensors, got {len(head)}"
                 )
+            first, second = head
+        else:
+            first = head[:, : self.act_dim]
+            second = head[:, self.act_dim :]
 
-        def forward(self, observation, noise=None):
-            x = (observation - self.obs_mean) / self.obs_std
-            head = self.net(x)
-            if isinstance(head, (tuple, list)):
-                if len(head) != 2:
-                    raise ValueError(
-                        "A policy network returning a tuple must return exactly "
-                        f"two tensors, got {len(head)}"
-                    )
-                first, second = head
-            else:
-                first = head[:, : self.act_dim]
-                second = head[:, self.act_dim :]
+        if self.distribution == "beta":
+            # softplus(x) + 1 keeps both parameters > 1, so the density is
+            # unimodal and the mode is well defined for deterministic runs.
+            alpha = torch.nn.functional.softplus(first) + 1.0
+            beta = torch.nn.functional.softplus(second) + 1.0
+            return alpha, beta
 
-            if self.distribution == "beta":
-                # softplus(x) + 1 keeps both parameters > 1, so the density is
-                # unimodal and the mode is well defined for deterministic runs.
-                alpha = torch.nn.functional.softplus(first) + 1.0
-                beta = torch.nn.functional.softplus(second) + 1.0
-                return alpha, beta
+        log_std = torch.clamp(second, _LOG_STD_MIN, _LOG_STD_MAX)
+        action = first + torch.exp(log_std) * noise
+        return torch.clamp(action, min=self.action_low, max=self.action_high)
 
-            log_std = torch.clamp(second, _LOG_STD_MIN, _LOG_STD_MAX)
-            action = first + torch.exp(log_std) * noise
-            return torch.clamp(action, min=self.action_low, max=self.action_high)
 
-    graph = _PolicyGraph()
-    graph.eval()
-    return graph
+class _SB3Actor(torch.nn.Module):
+    """
+    The actor half of a stable-baselines3 ActorCriticPolicy.
+
+    Parameters:
+        policy (Any): the ActorCriticPolicy to read.
+    """
+
+    def __init__(self, policy: Any) -> None:
+        super().__init__()
+        self.policy = policy
+
+    def forward(self, x):
+        features = self.policy.extract_features(x)
+        if isinstance(features, tuple):  # shared/separate extractors
+            features = features[0]
+        latent_pi = self.policy.mlp_extractor.forward_actor(features)
+        mean = self.policy.action_net(latent_pi)
+        log_std = self.policy.log_std.expand_as(mean)
+        return mean, log_std
 
 
 def _sb3_actor(model, spec: PolicySpec):
     """Extract the actor of a stable-baselines3 on-policy model as a Module."""
-    torch = _require_torch()
-
     policy = getattr(model, "policy", model)
     for attr in ("extract_features", "mlp_extractor", "action_net"):
         if not hasattr(policy, attr):
@@ -330,23 +331,7 @@ def _sb3_actor(model, spec: PolicySpec):
             "Use distribution='gaussian', or export from the UQTOPUS PPO for Beta."
         )
 
-    class _SB3Actor(torch.nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
-            self.policy = policy
-
-        def forward(self, x):
-            features = self.policy.extract_features(x)
-            if isinstance(features, tuple):  # shared/separate extractors
-                features = features[0]
-            latent_pi = self.policy.mlp_extractor.forward_actor(features)
-            mean = self.policy.action_net(latent_pi)
-            log_std = self.policy.log_std.expand_as(mean)
-            return mean, log_std
-
-    actor = _SB3Actor()
-    actor.eval()
-    return actor
+    return _SB3Actor(policy).eval()
 
 
 def _looks_like_sb3(obj: Any) -> bool:
@@ -355,7 +340,6 @@ def _looks_like_sb3(obj: Any) -> bool:
 
 
 def _torch_onnx_export(
-    torch: Any,
     graph: Any,
     dummy: Any,
     path: Path,
@@ -366,8 +350,6 @@ def _torch_onnx_export(
     """
     Run torch.onnx.export across PyTorch versions.
     """
-    import inspect
-
     input_names = list(spec.input_names)
     kwargs: dict[str, Any] = {
         "input_names": input_names,
@@ -465,8 +447,6 @@ def export_policy(
     Returns:
         PolicyArtifact: immutable handle to the exported file.
     """
-    torch = _require_torch()
-
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -488,14 +468,14 @@ def export_policy(
     else:
         raise ValueError(f"Unknown backend {backend!r}; use 'auto', 'torch' or 'sb3'")
 
-    graph = _build_wrapper(actor, spec, normalization)
+    graph = _PolicyGraph(actor, spec, normalization).eval()
 
     dummy: tuple[Any, ...] = (torch.zeros(1, spec.obs_dim, dtype=torch.float32),)
     if spec.noise_dim:
         dummy += (torch.zeros(1, spec.noise_dim, dtype=torch.float32),)
     output_names = list(spec.output_names)
 
-    _torch_onnx_export(torch, graph, dummy, path, spec, output_names, opset)
+    _torch_onnx_export(graph, dummy, path, spec, output_names, opset)
 
     _stamp_metadata(
         path,
@@ -531,7 +511,6 @@ def build_mlp(spec: PolicySpec, hidden: Sequence[int] = (64, 64), seed: int | No
     Maps (batch, obs_dim) to (batch, 2 * act_dim) raw head outputs, which is the
     contract expected by export_policy's 'torch' backend.
     """
-    torch = _require_torch()
     if seed is not None:
         torch.manual_seed(seed)
 
@@ -567,28 +546,26 @@ class _TorchReference:
     Numpy callable over the torch graph, matching the exported ONNX signature.
 
     Parameters:
-        graph (Any): the wrapper module built by _build_wrapper().
+        graph (Any): the exported graph.
         noise_dim (int): number of noise components the graph expects, 0 for none.
-        torch (Any): the imported torch module.
     """
 
-    def __init__(self, graph: Any, noise_dim: int, torch: Any) -> None:
+    def __init__(self, graph: Any, noise_dim: int) -> None:
         self.graph = graph
         self.noise_dim = noise_dim
-        self.torch = torch
 
     def __call__(
         self, obs: np.ndarray, noise: np.ndarray | None = None
     ) -> tuple[np.ndarray, ...]:
-        args = [self.torch.tensor(np.asarray(obs, dtype=np.float32))]
+        args = [torch.tensor(np.asarray(obs, dtype=np.float32))]
         if self.noise_dim:
             if noise is None:
                 raise ValueError(
                     "this spec declares a Gaussian action, so the reference "
                     "needs the same noise the graph was given"
                 )
-            args.append(self.torch.tensor(np.asarray(noise, dtype=np.float32)))
-        with self.torch.no_grad():
+            args.append(torch.tensor(np.asarray(noise, dtype=np.float32)))
+        with torch.no_grad():
             out = self.graph(*args)
         if isinstance(out, (tuple, list)):
             return tuple(item.numpy() for item in out)
@@ -608,6 +585,5 @@ def torch_reference(net: Any, spec: PolicySpec, normalization: Normalization) ->
         Callable: takes (observation, noise) and returns the graph outputs as
         numpy arrays.
     """
-    torch = _require_torch()
-    graph = _build_wrapper(net, spec, normalization)
-    return _TorchReference(graph, spec.noise_dim, torch)
+    graph = _PolicyGraph(net, spec, normalization).eval()
+    return _TorchReference(graph, spec.noise_dim)

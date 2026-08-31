@@ -9,11 +9,7 @@ See docs/rl_intrusive_design.md for the design rationale.
 
 from .spec import (
     ActionSpec,
-    CustomSource,
-    ForceCoeffSource,
-    ObservationSource,
     ObservationSpec,
-    PatchSource,
     PolicySpec,
     ProbeSource,
 )
@@ -30,7 +26,6 @@ from .export import (
 from .buffer import build_rollout_buffer, normalized_observations, rollout_statistics
 from .foam import controller_params, render_controller
 from .reward import (
-    RewardError,
     align_to_control,
     attach,
     evaluate_reward,
@@ -50,19 +45,14 @@ from .validate import ValidationReport, validate_export, validate_policy
 __all__ = [
     "ActionSpec",
     "ClosedLoopRunner",
-    "CustomSource",
     "EpisodeFailure",
-    "ForceCoeffSource",
     "Normalization",
-    "ObservationSource",
     "ObservationSpec",
-    "PatchSource",
     "PolicyArtifact",
     "PolicySpec",
     "ProbeSource",
     "Rollout",
     "RunningStatistics",
-    "RewardError",
     "TrajectoryError",
     "ValidationReport",
     "align_to_control",

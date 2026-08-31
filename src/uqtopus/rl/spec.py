@@ -9,63 +9,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, Sequence
 
 Vec3 = tuple[float, float, float]
-
-_SOURCE_REGISTRY: dict[str, type["ObservationSource"]] = {}
-
-
-def _register(cls: type["ObservationSource"]) -> type["ObservationSource"]:
-    _SOURCE_REGISTRY[cls.kind] = cls
-    return cls
-
 
 # Observation sources
 
 @dataclass(frozen=True)
-class ObservationSource:
-    """
-    Base class for one contribution to the observation vector.
-
-    A source declares *what* the solver must measure and *how many* scalar
-    components that measurement contributes. The concatenation of all sources,
-    in declaration order, is the canonical observation vector.
-    """
-
-    kind: ClassVar[str] = "base"
-
-    @property
-    def size(self) -> int:
-        raise NotImplementedError
-
-    def component_names(self) -> list[str]:
-        raise NotImplementedError
-
-    def to_dict(self) -> dict[str, Any]:
-        raise NotImplementedError
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ObservationSource":
-        payload = dict(data)
-        kind = payload.pop("kind")
-        if kind not in _SOURCE_REGISTRY:
-            raise ValueError(
-                f"Unknown observation source kind {kind!r}. "
-                f"Known kinds: {sorted(_SOURCE_REGISTRY)}"
-            )
-        return _SOURCE_REGISTRY[kind](**payload)
-
-
-@_register
-@dataclass(frozen=True)
-class ProbeSource(ObservationSource):
+class ProbeSource:
     """
     Point probes of a field, sampled by the solver at control time.
 
     Parameters:
-        field_name (str): OpenFOAM field name, e.g. 'p' or 'U'.
+        field_name (str): OpenFOAM field name.
         positions (sequence of (x, y, z)): probe locations, in declaration order.
         components (sequence of int or None): for vector/tensor fields, which
             components to keep. None means the field is scalar (one component).
@@ -116,127 +73,11 @@ class ProbeSource(ObservationSource):
             "name": self.name,
         }
 
-
-@_register
-@dataclass(frozen=True)
-class PatchSource(ObservationSource):
-    """
-    Scalar reduction of a field over a boundary patch.
-
-    Parameters:
-        field_name (str): field to reduce.
-        patch (str): patch name.
-        operation (str): one of 'average', 'areaAverage', 'integral',
-            'areaIntegral', 'min', 'max'.
-        component (int or None): component index for non-scalar fields.
-    """
-
-    field_name: str
-    patch: str
-    operation: Literal[
-        "average", "areaAverage", "integral", "areaIntegral", "min", "max"
-    ] = "areaAverage"
-    component: int | None = None
-    name: str = "patch"
-
-    kind: ClassVar[str] = "patch"
-
-    @property
-    def size(self) -> int:
-        return 1
-
-    def component_names(self) -> list[str]:
-        suffix = "" if self.component is None else str(self.component)
-        return [f"{self.name}.{self.patch}.{self.field_name}{suffix}"]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "field_name": self.field_name,
-            "patch": self.patch,
-            "operation": self.operation,
-            "component": self.component,
-            "name": self.name,
-        }
-
-
-@_register
-@dataclass(frozen=True)
-class ForceCoeffSource(ObservationSource):
-    """
-    Force coefficients on a patch, as produced by the forceCoeffs functionObject.
-
-    Parameters:
-        patch (str): patch the coefficients are computed on.
-        coefficients (sequence of str): e.g. ('Cd', 'Cl'), in declaration order.
-    """
-
-    patch: str
-    coefficients: tuple[str, ...] = ("Cd", "Cl")
-    name: str = "forceCoeffs"
-
-    kind: ClassVar[str] = "forceCoeffs"
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "coefficients", tuple(self.coefficients))
-        if not self.coefficients:
-            raise ValueError("ForceCoeffSource requires at least one coefficient")
-
-    @property
-    def size(self) -> int:
-        return len(self.coefficients)
-
-    def component_names(self) -> list[str]:
-        return [f"{self.name}.{self.patch}.{c}" for c in self.coefficients]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "patch": self.patch,
-            "coefficients": list(self.coefficients),
-            "name": self.name,
-        }
-
-
-@_register
-@dataclass(frozen=True)
-class CustomSource(ObservationSource):
-    """
-    Escape hatch for any measurement the solver-side controller knows how to
-    produce but that has no dedicated source class yet.
-
-    Parameters:
-        name (str): identifier the solver-side controller dispatches on.
-        n_components (int): how many scalars this source contributes.
-        options (dict): free-form entries forwarded verbatim to the OpenFOAM dict.
-    """
-
-    name: str
-    n_components: int
-    options: dict[str, Any] = field(default_factory=dict)
-
-    kind: ClassVar[str] = "custom"
-
-    def __post_init__(self) -> None:
-        if self.n_components < 1:
-            raise ValueError("CustomSource.n_components must be >= 1")
-
-    @property
-    def size(self) -> int:
-        return self.n_components
-
-    def component_names(self) -> list[str]:
-        if self.n_components == 1:
-            return [self.name]
-        return [f"{self.name}.{i}" for i in range(self.n_components)]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "name": self.name,
-            "n_components": self.n_components,
-            "options": dict(self.options),
-        }
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProbeSource":
+        payload = dict(data)
+        payload.pop("kind", None)
+        return cls(**payload)
 
 
 # Observation / action specs
@@ -247,54 +88,32 @@ class ObservationSpec:
     Declares the observation the policy consumes at control time.
 
     The observation vector is the concatenation of all sources in declaration
-    order, optionally repeated over the last `stack` control steps (oldest
-    first). The solver must build this exact vector and log it verbatim in the
-    trajectory; Python reads that log instead of recomputing it.
+    order.
 
     Parameters:
-        sources (sequence of ObservationSource): measurements, in canonical order.
-        stack (int): number of past control steps concatenated into one
-            observation. 1 means only the current step.
+        sources (sequence of ProbeSource): measurements, in canonical order.
     """
 
-    sources: tuple[ObservationSource, ...]
-    stack: int = 1
+    sources: tuple[ProbeSource, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sources", tuple(self.sources))
         if not self.sources:
             raise ValueError("ObservationSpec requires at least one source")
-        if self.stack < 1:
-            raise ValueError("ObservationSpec.stack must be >= 1")
-
-    @property
-    def frame_dim(self) -> int:
-        """Number of components contributed by one control step."""
-        return sum(s.size for s in self.sources)
 
     @property
     def dim(self) -> int:
-        """Total observation dimension, including stacking."""
-        return self.frame_dim * self.stack
+        return sum(s.size for s in self.sources)
 
     def component_names(self) -> list[str]:
-        frame = [n for s in self.sources for n in s.component_names()]
-        if self.stack == 1:
-            return frame
-        return [f"t-{self.stack - 1 - k}|{n}" for k in range(self.stack) for n in frame]
+        return [n for s in self.sources for n in s.component_names()]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "sources": [s.to_dict() for s in self.sources],
-            "stack": self.stack,
-        }
+        return {"sources": [s.to_dict() for s in self.sources]}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ObservationSpec":
-        return cls(
-            sources=tuple(ObservationSource.from_dict(d) for d in data["sources"]),
-            stack=int(data.get("stack", 1)),
-        )
+        return cls(sources=tuple(ProbeSource.from_dict(d) for d in data["sources"]))
 
 
 @dataclass(frozen=True)
@@ -302,23 +121,18 @@ class ActionSpec:
     """
     Declares the action the policy produces and how the solver applies it.
 
-    Bounds are always physical. For the 'beta' distribution the graph emits
-    parameters over [0, 1] and the solver rescales into [low, high] using these
-    bounds, read from the ONNX metadata. For 'gaussian' the graph emits mean and
-    log_std already in physical units.
+    Bounds are physical. A 'beta' graph emits parameters over [0, 1] and the
+    solver rescales into [low, high]; a 'gaussian' graph emits mean and log_std
+    already in physical units.
 
     Parameters:
         name (str): action label, used in trajectory columns.
-        targets (str or sequence of str): what the action drives, in order.
-            Target i receives component i of the action, so the order here is
-            the order of the action vector, as it already is for low and high.
-            A single name is the one component case.
+        targets (str or sequence of str): what the action drives. Target i
+            receives component i, so this order is the action vector order.
         n_components (int or None): action dimension. None takes it from the
-            number of targets, which is the usual case.
+            number of targets.
         low, high (float or sequence of float): physical bounds, scalar or per component.
         distribution ('gaussian' or 'beta'): policy distribution family.
-            Gaussian is the default; beta never leaves the bounds and needs no
-            clipping.
         ramp_fraction (float): the solver ramps linearly from the previous
             action to the new one over this fraction of the control interval.
             0 means an immediate step.
@@ -498,24 +312,12 @@ class PolicySpec:
 
     @property
     def hash(self) -> str:
-        """
-        Stable identifier of the contract.
-
-        Written into the ONNX metadata, copied by the solver into the trajectory
-        header, and compared on read. A mismatch means the policy, the case
-        dictionary and the parser disagree, and is caught before any physics runs.
-        """
+        """Stable identifier of the contract, carried by the ONNX file and the trajectory."""
         canonical = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
     def to_metadata(self) -> dict[str, str]:
-        """
-        Key/value pairs stamped into the ONNX metadata_props.
-
-        The full spec is stored under 'uqtopus.spec' for Python, while the flat
-        scalar entries exist so the solver can read what it needs without a JSON
-        parser.
-        """
+        """Key/value pairs stamped into the ONNX metadata_props."""
         return {
             "uqtopus.spec_hash": self.hash,
             "uqtopus.spec": self.to_json(),

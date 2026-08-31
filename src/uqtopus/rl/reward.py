@@ -21,10 +21,6 @@ POSTPROCESSING = "postProcessing"
 RewardFn = Callable[[xr.Dataset], "np.ndarray | float"]
 
 
-class RewardError(Exception):
-    """Raised when reward inputs or outputs are unusable."""
-
-
 # Reading OpenFOAM functionObject output
 
 def _parse_column_names(header_lines: list[str], n_columns: int) -> list[str]:
@@ -67,19 +63,19 @@ def read_function_object(
     """
     root = Path(case_dir) / POSTPROCESSING / name
     if not root.is_dir():
-        raise RewardError(f"no functionObject output at {root}")
+        raise ValueError(f"no functionObject output at {root}")
 
     time_dirs = sorted(
         (d for d in root.iterdir() if d.is_dir()),
         key=lambda d: float(d.name) if _is_number(d.name) else float("inf"),
     )
     if not time_dirs:
-        raise RewardError(f"{root} has no time directories")
+        raise ValueError(f"{root} has no time directories")
 
     if file is None:
         files = {p.name for d in time_dirs for p in d.iterdir() if p.is_file()}
         if len(files) != 1:
-            raise RewardError(
+            raise ValueError(
                 f"{root} holds several files {sorted(files)}; pass file= to choose"
             )
         file = files.pop()
@@ -104,11 +100,11 @@ def read_function_object(
             frames.append((_parse_column_names(header, table.shape[1]), table))
 
     if not frames:
-        raise RewardError(f"no data rows in any {file} under {root}")
+        raise ValueError(f"no data rows in any {file} under {root}")
 
     columns = frames[0][0]
     if any(names != columns for names, _ in frames):
-        raise RewardError(f"inconsistent columns across time directories in {root}")
+        raise ValueError(f"inconsistent columns across time directories in {root}")
 
     table = np.vstack([t for _, t in frames])
     # later restarts overwrite earlier samples at the same time
@@ -160,11 +156,11 @@ def align_to_control(
 
     control_times = np.asarray(control_times, dtype=np.float64).ravel()
     if control_times.size == 0:
-        raise RewardError("control_times is empty")
+        raise ValueError("control_times is empty")
 
     source_times = np.asarray(series["time"].values, dtype=np.float64)
     if source_times.size == 0:
-        raise RewardError("the series has no samples")
+        raise ValueError("the series has no samples")
 
     if how == "interp":
         return series.interp(time=control_times)
@@ -276,17 +272,17 @@ def evaluate_reward(trajectory: xr.Dataset, reward_fn: RewardFn) -> np.ndarray:
 
     rewards = np.asarray(result, dtype=np.float64).ravel()
     if rewards.size == 1 and n_steps != 1:
-        raise RewardError(
+        raise ValueError(
             f"the reward function returned a single value for {n_steps} control "
             "steps; PPO needs one reward per step"
         )
     if rewards.size != n_steps:
-        raise RewardError(
+        raise ValueError(
             f"the reward function returned {rewards.size} values for {n_steps} "
             "control steps"
         )
     if not np.all(np.isfinite(rewards)):
-        raise RewardError(
+        raise ValueError(
             f"the reward function returned {int((~np.isfinite(rewards)).sum())} "
             "non-finite value(s)"
         )

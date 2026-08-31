@@ -14,8 +14,10 @@ from itertools import repeat
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+import gymnasium as gym
 import numpy as np
 import xarray as xr
+from tqdm import tqdm
 
 from ..exceptions import SolverDivergedError
 from ..simulation import OpenFOAMSimulator, run_simulation
@@ -106,6 +108,32 @@ class Rollout:
         )
 
 
+class _SpacesOnlyEnv(gym.Env):
+    """
+    Environment that carries the spaces and nothing else.
+
+    Parameters:
+        observation_space (gym.spaces.Box): the observation space.
+        action_space (gym.spaces.Box): the action space.
+    """
+
+    metadata: dict = {"render_modes": []}
+
+    def __init__(self, observation_space: gym.spaces.Box, action_space: gym.spaces.Box) -> None:
+        self.observation_space = observation_space
+        self.action_space = action_space
+
+    def reset(self, *, seed=None, options=None):
+        super().reset(seed=seed)
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
+
+    def step(self, action):
+        raise NotImplementedError(
+            "this environment carries only the spaces; use "
+            "ClosedLoopRunner.collect() to produce episodes"
+        )
+
+
 class ClosedLoopRunner:
     """
     Runs episodes of intrusive closed-loop control and returns their experience.
@@ -127,8 +155,6 @@ class ClosedLoopRunner:
             None runs the solver locally.
         trajectory_reader (callable or None): custom parser for a solver that
             writes trajectories in its own format.
-        on_partial ('keep' or 'drop'): what to do when a case fails but left a
-            usable partial trajectory behind. 'keep' passes it to reward_fn.
     """
 
     def __init__(
@@ -142,7 +168,6 @@ class ClosedLoopRunner:
         extra_params: Mapping[str, Any] | None = None,
         run_fn: RunFn | None = None,
         trajectory_reader: Callable[[Path], tuple[dict[str, str], np.ndarray]] | None = None,
-        on_partial: str = "keep",
     ) -> None:
         self.simulator = simulator
         self.spec = spec
@@ -155,57 +180,30 @@ class ClosedLoopRunner:
         self.run_fn = run_fn or self._run_locally
         self.trajectory_reader = trajectory_reader
 
-        if on_partial not in ("keep", "drop"):
-            raise ValueError("on_partial must be 'keep' or 'drop'")
-        self.on_partial = on_partial
-
     # gym vocabulary, for the parts of it that apply
 
     @property
     def observation_space(self):
-        import gymnasium as gym
-
         return gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.spec.obs_dim,), dtype=np.float32
         )
 
     @property
     def action_space(self):
-        import gymnasium as gym
-
         return gym.spaces.Box(
             low=np.asarray(self.spec.action.low, dtype=np.float32),
             high=np.asarray(self.spec.action.high, dtype=np.float32),
             dtype=np.float32,
         )
 
-    def stub_env(self):
+    def stub_env(self) -> gym.Env:
         """
         Build a gymnasium.Env carrying only the observation and action spaces.
 
         Returns:
             gymnasium.Env: reset() returns a zero observation, step() raises.
         """
-        import gymnasium as gym
-
-        spaces = (self.observation_space, self.action_space)
-        obs_dim = self.spec.obs_dim
-
-        class _SpacesOnlyEnv(gym.Env):
-            metadata: dict = {"render_modes": []}
-            observation_space, action_space = spaces
-
-            def reset(self, *, seed=None, options=None):
-                super().reset(seed=seed)
-                return np.zeros(obs_dim, dtype=np.float32), {}
-
-            def step(self, action):
-                raise NotImplementedError(
-                    "this environment carries only the spaces; use "
-                    "ClosedLoopRunner.collect() to produce episodes"
-                )
-
-        return _SpacesOnlyEnv()
+        return _SpacesOnlyEnv(self.observation_space, self.action_space)
 
     # collection
 
@@ -255,19 +253,27 @@ class ClosedLoopRunner:
         if n_jobs > 1:
             with ThreadPoolExecutor(max_workers=n_jobs) as pool:
                 results = list(
-                    pool.map(
-                        self._run_episode,
-                        indices,
-                        values,
-                        repeat(policy_path),
-                        repeat(iteration),
-                        repeat(verbose),
+                    tqdm(
+                        pool.map(
+                            self._run_episode,
+                            indices,
+                            values,
+                            repeat(policy_path),
+                            repeat(iteration),
+                            repeat(verbose),
+                        ),
+                        total=n_episodes,
+                        desc='Running episodes',
                     )
                 )
         else:
             results = [
                 self._run_episode(index, seed, policy_path, iteration, verbose)
-                for index, seed in zip(indices, values)
+                for index, seed in tqdm(
+                    list(zip(indices, values)),
+                    total=n_episodes,
+                    desc='Running episodes',
+                )
             ]
 
         rollout = Rollout(artifact=artifact)
@@ -324,8 +330,6 @@ class ClosedLoopRunner:
             return None, EpisodeFailure(index, case_dir, f"reward failed: {exc}")
 
         if diverged:
-            if self.on_partial == "drop":
-                return None, EpisodeFailure(index, case_dir, diverged)
             episode.attrs["diverged"] = True
             return episode, EpisodeFailure(index, case_dir, f"{diverged}; partial kept")
 

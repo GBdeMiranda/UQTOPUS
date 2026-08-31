@@ -17,7 +17,7 @@ Built on top of `Jinja2`, `xarray` and `fluidfoam`.
 
 ## Features
 
-- End-to-end UQ workflow: sample → render cases → run → collect → analyze
+- End-to-end UQ workflow: sample -> render cases -> run -> collect -> analyze
 - OpenFOAM-native integration: Jinja2-templated dictionaries and Allrun orchestration
 - Parallel execution built-in support for sampled scenarios
 - Reproducible experiment management and basic statistics with CSV/NumPy-friendly outputs
@@ -43,11 +43,11 @@ source /opt/openfoam9/etc/bashrc
 pip install uqtopus
 ```
 
-Requires Python 3.9 or newer.
+Requires Python 3.10 or newer.
 
 ## Closed-loop RL: the ONNX boundary condition
 
-Needed only for `uqtopus.rl`, where the policy runs inside the solver. `uqtopusPolicy/` builds a shared library that stock `pimpleFoam` loads through the `libs()` line of `controlDict`, adding the `uqtopusBoundaryCondition` boundary condition. The solver itself is not modified.
+Needed only for `uqtopus.rl`, where the policy runs inside the solver. The package ships a small OpenFOAM library that stock `pimpleFoam` loads through the `libs()` line of `controlDict`, adding the `uqtopusBoundaryCondition` boundary condition. The solver itself is not modified.
 
 ### 1. Python extras
 
@@ -55,27 +55,23 @@ Needed only for `uqtopus.rl`, where the policy runs inside the solver. `uqtopusP
 pip install "uqtopus[rl]"
 ```
 
-### 2. ONNX Runtime
-
-The library links against the C++ runtime. Version 1.15 or newer, for opset 17.
+### 2. Build the library
 
 ```bash
-mkdir -p ~/opt && cd ~/opt
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.17.3/onnxruntime-linux-x64-1.17.3.tgz
-tar xzf onnxruntime-linux-x64-1.17.3.tgz
-echo 'export ONNXRUNTIME_ROOT=$HOME/opt/onnxruntime-linux-x64-1.17.3' >> ~/.bashrc
+uqtopus rl-build --install-onnxruntime
 ```
 
-### 3. Build the library
+That finds the OpenFOAM installation, downloads the ONNX Runtime C++ package if none is present, compiles, and writes the library where the solver already looks for it. Nothing is installed system-wide and no `sudo` is needed.
 
-```bash
-source /opt/openfoam9/etc/bashrc
-cd uqtopusPolicy
-wmake libso
-ls $FOAM_USER_LIBBIN/libuqtopusPolicy.so
-```
+Drop `--install-onnxruntime` if you already have the runtime; it is found through `ONNXRUNTIME_ROOT` or under `~/opt`. Useful options:
 
-### 4. Use it in a case
+| option | what it does |
+|---|---|
+| `--check` | run the checks and stop, building nothing |
+| `--foam PATH` | use a specific `etc/bashrc` or installation root |
+| `--onnxruntime PATH` | use a specific ONNX Runtime release |
+
+### 3. Use it in a case
 
 `system/controlDict` loads the library:
 
@@ -84,7 +80,7 @@ application     pimpleFoam;
 libs            ("libuqtopusPolicy.so");
 ```
 
-The controlled patch of `0/U` carries the block that `uqtopus.rl.render_controller()` produces. See `examples/07_cylinder2D_jets.ipynb` for the whole loop and `uqtopusPolicy/README.md` for the library.
+The controlled patch of `0/U` carries the block that `uqtopus.rl.render_controller()` produces. _See `src/uqtopus/policy_src/README.md` for the library_.
 
 ## Basic Usage
 
@@ -142,7 +138,9 @@ For more information on configuring and running UQ studies, please refer to the 
 
 ```
 UQTOPUS/
-├── src/                      # Python package
+├── src/uqtopus/              # Python package
+│   ├── rl/                   # closed-loop reinforcement learning
+│   └── policy_src/           # OpenFOAM library: the ONNX boundary condition
 ├── examples/                 # Example of usage with scripts and templates
 │   ├── templates/            # OpenFOAM case templates
 │   │   └── base_case/        # Base case with Jinja2 placeholders
@@ -156,7 +154,6 @@ UQTOPUS/
 │   │       ├── sample_002/   # OpenFOAM case for sample 2
 │   │       └── ...
 │   └── config.yaml           # Configuration file for examples
-├── uqtopusPolicy/            # OpenFOAM library: the ONNX boundary condition
 └── README.md                 # This file
 ```
 

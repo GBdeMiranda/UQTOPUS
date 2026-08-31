@@ -122,7 +122,6 @@ def controller_mapping(
     mapping instead of parsing the rendered text.
     """
     observation = {
-        "stack": spec.observation.stack,
         "dim": spec.obs_dim,
         "sources": [
             {_camel(k): v for k, v in source.to_dict().items() if v is not None}
