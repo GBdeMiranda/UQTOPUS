@@ -56,6 +56,15 @@ void Foam::uqtopusController::readContract(const dictionary& dict)
     const dictionary& act = dict.subDict("action");
     actionName_ = act.lookup<word>("name");
     rampFraction_ = act.lookup<scalar>("rampFraction");
+    low_ = scalarField(act.lookup("low"));
+    high_ = scalarField(act.lookup("high"));
+
+    if (low_.size() != high_.size())
+    {
+        FatalErrorInFunction
+            << "the action declares " << low_.size() << " lower bounds and "
+            << high_.size() << " upper bounds" << abort(FatalError);
+    }
 }
 
 
@@ -190,6 +199,8 @@ Foam::uqtopusController::uqtopusController
     endTime_(0),
     hasEndTime_(false),
     rampFraction_(0),
+    low_(),
+    high_(),
     seed_(0),
     deterministic_(false),
     curTimeIndex_(-1),
@@ -317,6 +328,11 @@ const Foam::scalarField& Foam::uqtopusController::action() const
             ramp = min(max(since/(rampFraction_*controlInterval_), 0), 1);
         }
         action_ = ramp*actionNew_ + (1 - ramp)*actionOld_;
+
+        forAll(action_, i)
+        {
+            action_[i] = min(max(action_[i], low_[i]), high_[i]);
+        }
     }
 
     curTimeIndex_ = timeIndex;

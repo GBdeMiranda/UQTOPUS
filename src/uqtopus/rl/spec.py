@@ -349,7 +349,6 @@ class PolicySpec:
             ["time"]
             + self.observation.component_names()
             + self.action.component_names()
-            + ["seed"]
         )
 
     def __repr__(self) -> str:

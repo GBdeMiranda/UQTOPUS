@@ -268,8 +268,6 @@ class _PolicyGraph(torch.nn.Module):
         for name, values in (
             ("obs_mean", normalization.mean),
             ("obs_std", normalization.std),
-            ("action_low", spec.action.low),
-            ("action_high", spec.action.high),
         ):
             self.register_buffer(
                 name,
@@ -298,8 +296,7 @@ class _PolicyGraph(torch.nn.Module):
             return alpha, beta
 
         log_std = torch.clamp(second, _LOG_STD_MIN, _LOG_STD_MAX)
-        action = first + torch.exp(log_std) * noise
-        return torch.clamp(action, min=self.action_low, max=self.action_high)
+        return first + torch.exp(log_std) * noise
 
 
 class _SB3Actor(torch.nn.Module):

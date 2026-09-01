@@ -246,20 +246,6 @@ def validate_policy(
             ", ".join(f"{n} in [{a.min():.3g}, {a.max():.3g}]" for n, a in zip(actual, outputs)),
         )
 
-    if effective.action.distribution == "gaussian" and len(outputs) == 1:
-        action = outputs[0]
-        low = np.asarray(effective.action.low, dtype=np.float64)
-        high = np.asarray(effective.action.high, dtype=np.float64)
-        if np.any(action < low - tolerance) or np.any(action > high + tolerance):
-            report.add(
-                "bounds",
-                "error",
-                f"the graph returned actions outside [{low}, {high}]; the clip "
-                "is missing or the bounds were not baked in",
-            )
-        else:
-            report.add("bounds", "ok", f"actions within [{low}, {high}]")
-
     if effective.action.distribution == "beta" and len(outputs) == 2:
         alpha, beta = outputs
         if np.any(alpha <= 0) or np.any(beta <= 0):

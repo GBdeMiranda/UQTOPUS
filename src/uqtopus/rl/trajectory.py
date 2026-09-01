@@ -72,7 +72,7 @@ def write_trajectory(
             f"got {actions.shape}"
         )
 
-    columns = spec.trajectory_columns()[:-1]  # 'seed' lives in the header
+    columns = spec.trajectory_columns()
     header = [
         "# uqtopus trajectory",
         f"# specHash         {spec.hash}",
@@ -266,41 +266,3 @@ def read_trajectory(
         },
     )
     return dataset
-
-
-def concat_trajectories(trajectories: Sequence[xr.Dataset]) -> xr.Dataset:
-    """
-    Stack episodes along a new 'episode' dimension.
-
-    Episodes of differing length are padded with NaN, and a boolean 'valid'
-    variable marks the real steps, so a run that diverged early stays in the
-    batch instead of forcing the whole rollout to be discarded.
-    """
-    if not trajectories:
-        raise ValueError("concat_trajectories requires at least one trajectory")
-
-    lengths = [ds.sizes["time"] for ds in trajectories]
-    longest = max(lengths)
-
-    padded = []
-    for ds in trajectories:
-        n = ds.sizes["time"]
-        item = ds.drop_vars("time")
-        if n < longest:
-            # padding the mask alongside the data would cast NaN to True
-            item = item.pad(time=(0, longest - n), constant_values=np.nan)
-        mask = np.zeros(longest, dtype=bool)
-        mask[:n] = True
-        padded.append(item.assign(valid=("time", mask)))
-
-    stacked = xr.concat(padded, dim="episode")
-    stacked = stacked.assign_coords(
-        episode=np.arange(len(trajectories)),
-        time=("time", np.asarray(trajectories[int(np.argmax(lengths))].time)),
-    )
-    stacked.attrs = {
-        "n_episodes": len(trajectories),
-        "lengths": lengths,
-        "spec_hash": trajectories[0].attrs.get("spec_hash", ""),
-    }
-    return stacked

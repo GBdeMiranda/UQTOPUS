@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import stable_baselines3 as sb3
 import torch as th
 
 from uqtopus.rl import (
@@ -20,6 +21,16 @@ from uqtopus.rl import (
 from uqtopus.rl.algos import PPO
 
 from conftest import N_STEPS, make_runner, make_spec
+
+_SEEN_KWARGS: dict = {}
+_ORIGINAL_PPO_INIT = sb3.PPO.__init__
+
+
+def _record_ppo_kwargs(self, policy, env, **kwargs):
+    """Stand-in for stable_baselines3.PPO.__init__ that keeps what it was given."""
+    _SEEN_KWARGS.clear()
+    _SEEN_KWARGS.update(kwargs)
+    _ORIGINAL_PPO_INIT(self, policy, env, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +124,16 @@ def test_statistics_summarize_the_batch(runner, tmp_path):
 # ---------------------------------------------------------------------------
 # the PPO subclass
 # ---------------------------------------------------------------------------
+
+def test_the_actor_stays_on_the_cpu(runner, tmp_path, monkeypatch):
+    monkeypatch.setattr(sb3.PPO, "__init__", _record_ppo_kwargs)
+
+    PPO("MlpPolicy", runner, export_dir=tmp_path / "pol")
+    assert _SEEN_KWARGS["device"] == "cpu"
+
+    PPO("MlpPolicy", runner, export_dir=tmp_path / "pol", device="auto")
+    assert _SEEN_KWARGS["device"] == "auto"
+
 
 def test_a_beta_spec_is_refused(simulator):
     beta = make_spec(

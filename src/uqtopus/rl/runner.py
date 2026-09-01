@@ -148,12 +148,8 @@ class ClosedLoopRunner:
             rendered, in 'folder__file__variable' form, e.g. '0__U__controller'.
         function_objects (sequence of str): functionObject names read from each
             case and aligned onto the control steps before reward_fn sees them.
-        extra_params (mapping or None): further template parameters merged into
-            every case.
         run_fn (callable or None): executes a case, as run_fn(case_dir, params).
             None runs the solver locally.
-        trajectory_reader (callable or None): custom parser for a solver that
-            writes trajectories in its own format.
     """
 
     def __init__(
@@ -164,9 +160,7 @@ class ClosedLoopRunner:
         *,
         controller_keys: str | Sequence[str],
         function_objects: Sequence[str] = (),
-        extra_params: Mapping[str, Any] | None = None,
         run_fn: RunFn | None = None,
-        trajectory_reader: Callable[[Path], tuple[dict[str, str], np.ndarray]] | None = None,
     ) -> None:
         self.simulator = simulator
         self.spec = spec
@@ -175,9 +169,7 @@ class ClosedLoopRunner:
             [controller_keys] if isinstance(controller_keys, str) else list(controller_keys)
         )
         self.function_objects = list(function_objects)
-        self.extra_params = dict(extra_params or {})
         self.run_fn = run_fn or self._run_locally
-        self.trajectory_reader = trajectory_reader
 
     # gym vocabulary, for the parts of it that apply
 
@@ -298,9 +290,8 @@ class ClosedLoopRunner:
     ) -> tuple[xr.Dataset | None, EpisodeFailure | None]:
         case_dir = self.simulator.output_path / f"iter{iteration:04d}_ep{index:02d}"
 
-        params = dict(self.extra_params)
-        params.update(
-            controller_params(self.spec, policy_path, self.controller_keys, seed=seed)
+        params = controller_params(
+            self.spec, policy_path, self.controller_keys, seed=seed
         )
 
         diverged: str | None = None
@@ -328,9 +319,7 @@ class ClosedLoopRunner:
         return episode, None
 
     def _read_episode(self, case_dir: Path, seed: int, verbose: bool) -> xr.Dataset:
-        trajectory = read_trajectory(
-            case_dir, self.spec, reader=self.trajectory_reader
-        )
+        trajectory = read_trajectory(case_dir, self.spec)
 
         series = [read_function_object(case_dir, name) for name in self.function_objects]
         data = attach(trajectory, *series) if series else trajectory

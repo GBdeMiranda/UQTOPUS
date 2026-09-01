@@ -11,11 +11,9 @@ import xarray as xr
 
 from uqtopus.rl import (
     ProbeSource,
-    RewardError,
     TrajectoryError,
     align_to_control,
     attach,
-    concat_trajectories,
     evaluate_reward,
     find_trajectory,
     moving_average,
@@ -101,7 +99,7 @@ def test_non_increasing_time_is_rejected(spec, tmp_path):
     times[3] = times[2]
     path = tmp_path / "t.dat"
     # bypass the writer, which would not produce this
-    columns = " ".join(spec.trajectory_columns()[:-1])
+    columns = " ".join(spec.trajectory_columns())
     rows = [
         " ".join(f"{v:.10g}" for v in (t, *o, *a)) for t, o, a in zip(times, obs, act)
     ]
@@ -159,25 +157,6 @@ def test_custom_reader_is_honored(spec, tmp_path):
     assert np.allclose(ds["action"].values, act, atol=1e-9)
 
 
-def test_concat_pads_short_episodes(spec, tmp_path):
-    with pytest.raises(ValueError):
-        concat_trajectories([])
-
-    episodes = []
-    for i, n in enumerate((10, 6, 10)):
-        times, obs, act = make_episode(spec, n_steps=n, seed=i)
-        path = write_trajectory(tmp_path / f"t{i}.dat", spec, times, obs, act)
-        episodes.append(read_trajectory(path, spec))
-
-    stacked = concat_trajectories(episodes)
-
-    assert stacked.sizes["episode"] == 3
-    assert stacked.sizes["time"] == 10
-    assert stacked["valid"].values[1].tolist() == [True] * 6 + [False] * 4
-    assert bool(np.isnan(stacked["observation"].values[1, 6:]).all())
-    assert stacked.attrs["lengths"] == [10, 6, 10]
-
-
 # ---------------------------------------------------------------------------
 # functionObject output
 # ---------------------------------------------------------------------------
@@ -208,14 +187,14 @@ def test_restarts_are_merged_with_the_later_run_winning(tmp_path):
 
 
 def test_reader_failures_name_the_fix(tmp_path):
-    with pytest.raises(RewardError, match="no functionObject output"):
+    with pytest.raises(ValueError, match="no functionObject output"):
         read_function_object(tmp_path, "forceCoeffs")
 
     times = np.arange(0.0, 0.1, 0.01)
     write_force_coeffs(tmp_path, 0, times, np.ones_like(times), np.zeros_like(times))
     (tmp_path / "postProcessing" / "forceCoeffs" / "0" / "other.dat").write_text("# Time\tx\n0 1\n")
 
-    with pytest.raises(RewardError, match="pass file="):
+    with pytest.raises(ValueError, match="pass file="):
         read_function_object(tmp_path, "forceCoeffs")
 
     assert set(read_function_object(tmp_path, "forceCoeffs", file="other.dat").data_vars) == {"x"}
@@ -298,9 +277,9 @@ def test_evaluate_reward_checks_the_shape(spec, tmp_path):
 
     assert evaluate_reward(trajectory, lambda ds: np.ones(n)).shape == (n,)
 
-    with pytest.raises(RewardError, match="single value"):
+    with pytest.raises(ValueError, match="single value"):
         evaluate_reward(trajectory, lambda ds: 1.0)
-    with pytest.raises(RewardError, match="returned 3 values"):
+    with pytest.raises(ValueError, match="returned 3 values"):
         evaluate_reward(trajectory, lambda ds: np.ones(3))
-    with pytest.raises(RewardError, match="non-finite"):
+    with pytest.raises(ValueError, match="non-finite"):
         evaluate_reward(trajectory, lambda ds: np.full(n, np.nan))

@@ -34,7 +34,6 @@ from .reward import (
 )
 from .trajectory import (
     TrajectoryError,
-    concat_trajectories,
     find_trajectory,
     read_trajectory,
     write_trajectory,
@@ -59,7 +58,6 @@ __all__ = [
     "attach",
     "build_mlp",
     "build_rollout_buffer",
-    "concat_trajectories",
     "evaluate_reward",
     "export_policy",
     "export_random_policy",

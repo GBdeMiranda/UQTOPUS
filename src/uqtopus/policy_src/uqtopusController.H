@@ -55,6 +55,8 @@ class uqtopusController
         scalar endTime_;
         bool hasEndTime_;
         scalar rampFraction_;
+        scalarField low_;
+        scalarField high_;
         label seed_;
         bool deterministic_;
         vectorField positions_;

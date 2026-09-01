@@ -168,7 +168,7 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
 
     # the "solver" copies the rendered dictionary aside and writes a trajectory
     steps = 4
-    columns = " ".join(spec.trajectory_columns()[:-1])
+    columns = " ".join(spec.trajectory_columns())
     rows = [
         " ".join(
             [f"{spec.control_interval * (k + 1):g}"]
