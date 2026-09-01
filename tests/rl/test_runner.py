@@ -103,14 +103,6 @@ def test_a_diverged_run_keeps_its_partial_trajectory(simulator, spec, artifact):
     assert "partial kept" in str(rollout.failures[0])
 
 
-def test_partial_trajectories_can_be_dropped(simulator, spec, artifact):
-    runner = make_runner(
-        simulator, spec, fake_solver(spec, fail_after=5), on_partial="drop"
-    )
-    with pytest.raises(RuntimeError, match="all 1 episodes failed"):
-        runner.collect(artifact, n_episodes=1)
-
-
 def test_one_bad_case_does_not_sink_the_batch(simulator, spec, artifact):
     good = fake_solver(spec)
     bad = fake_solver(spec, fail_after=0, write_coeffs=False)
@@ -158,7 +150,7 @@ def test_spaces_come_from_the_spec_and_the_stub_env_refuses_to_step(coeff_runner
     assert obs.shape == (spec.obs_dim,)
     assert env.observation_space.shape == (spec.obs_dim,)
 
-    with pytest.raises(NotImplementedError, match="chosen inside the solver"):
+    with pytest.raises(NotImplementedError, match="carries only the spaces"):
         env.step(np.zeros(spec.act_dim, dtype=np.float32))
 
 

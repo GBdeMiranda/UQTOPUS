@@ -17,7 +17,6 @@ from typing import Any, Callable, Mapping, Sequence
 import gymnasium as gym
 import numpy as np
 import xarray as xr
-from tqdm import tqdm
 
 from ..exceptions import SolverDivergedError
 from ..simulation import OpenFOAMSimulator, run_simulation
@@ -253,27 +252,19 @@ class ClosedLoopRunner:
         if n_jobs > 1:
             with ThreadPoolExecutor(max_workers=n_jobs) as pool:
                 results = list(
-                    tqdm(
-                        pool.map(
-                            self._run_episode,
-                            indices,
-                            values,
-                            repeat(policy_path),
-                            repeat(iteration),
-                            repeat(verbose),
-                        ),
-                        total=n_episodes,
-                        desc='Running episodes',
+                    pool.map(
+                        self._run_episode,
+                        indices,
+                        values,
+                        repeat(policy_path),
+                        repeat(iteration),
+                        repeat(verbose),
                     )
                 )
         else:
             results = [
                 self._run_episode(index, seed, policy_path, iteration, verbose)
-                for index, seed in tqdm(
-                    list(zip(indices, values)),
-                    total=n_episodes,
-                    desc='Running episodes',
-                )
+                for index, seed in zip(indices, values)
             ]
 
         rollout = Rollout(artifact=artifact)
