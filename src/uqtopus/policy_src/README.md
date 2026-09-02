@@ -94,7 +94,7 @@ libs            ("libuqtopusPolicy.so");
 The `libs` entry is what puts `uqtopusBoundaryCondition` in the table of boundary condition types. Without it the run stops while reading `0/U`, printing every type OpenFOAM does know. In `0.orig/U`, the patch entry is what `uqtopus.rl.render_controller()` produces, plus a `value`:
 
 ```
-    jet
+    actuator
     {
         type            uqtopusBoundaryCondition;
         policy          "/abs/path/policy.onnx";

@@ -101,7 +101,7 @@ def build_rollout_buffer(
 
 
 def rollout_statistics(rollout: Rollout) -> dict[str, float]:
-    """Per-iteration summary of episode lengths, returns and divergences."""
+    """Per-iteration summary of episode lengths, returns, divergences and bounds."""
     lengths = rollout.lengths
     returns = rollout.returns
     diverged = sum(bool(ds.attrs.get("diverged")) for ds in rollout.episodes)
@@ -113,4 +113,5 @@ def rollout_statistics(rollout: Rollout) -> dict[str, float]:
         "rollout/episodes": float(len(rollout.episodes)),
         "rollout/diverged": float(diverged),
         "rollout/failures": float(len(rollout.failures)),
+        "rollout/fraction_at_bounds": rollout.fraction_at_bounds,
     }

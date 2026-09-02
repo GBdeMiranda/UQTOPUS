@@ -38,6 +38,7 @@ from .trajectory import (
     read_trajectory,
     write_trajectory,
 )
+from .progress import TrainingLog
 from .runner import ClosedLoopRunner, EpisodeFailure, Rollout
 from .validate import ValidationReport, validate_export, validate_policy
 
@@ -52,6 +53,7 @@ __all__ = [
     "ProbeSource",
     "Rollout",
     "RunningStatistics",
+    "TrainingLog",
     "TrajectoryError",
     "ValidationReport",
     "align_to_control",

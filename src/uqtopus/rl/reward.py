@@ -27,9 +27,8 @@ def _parse_column_names(header_lines: list[str], n_columns: int) -> list[str]:
     """
     Recover column names from an OpenFOAM functionObject header.
 
-    The convention is that the last comment line holds the names, e.g.
-    '# Time  Cd  Cd(f)  Cd(r)  Cl ...'. Falls back to positional names when the
-    header is absent or does not line up.
+    The convention is that the last comment line holds one name per column.
+    Falls back to positional names when the header is absent or does not line up.
     """
     for line in reversed(header_lines):
         names = line.lstrip("#").replace("\t", " ").split()
@@ -226,10 +225,6 @@ def moving_average(
 ) -> np.ndarray:
     """
     Trailing moving average, with the leading steps averaged over what exists.
-
-    A reward built on an oscillating quantity usually has to average over a
-    period, otherwise it mostly measures the phase of the oscillation rather
-    than the effect of the action.
 
     Parameters:
         values: the series to smooth.

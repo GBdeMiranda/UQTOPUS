@@ -131,7 +131,8 @@ class ActionSpec:
             receives component i, so this order is the action vector order.
         n_components (int or None): action dimension. None takes it from the
             number of targets.
-        low, high (float or sequence of float): physical bounds, scalar or per component.
+        low, high (float or sequence of float): bounds in the units of the
+            action, scalar or per component.
         distribution ('gaussian' or 'beta'): policy distribution family.
         ramp_fraction (float): the solver ramps linearly from the previous
             action to the new one over this fraction of the control interval.

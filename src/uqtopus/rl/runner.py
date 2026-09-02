@@ -92,6 +92,15 @@ class Rollout:
         """Undiscounted sum of rewards per episode."""
         return np.array([float(ds["reward"].sum()) for ds in self.episodes])
 
+    @property
+    def fraction_at_bounds(self) -> float:
+        """Share of recorded action components that reached or passed their bounds."""
+        actions = self.actions
+        low = np.asarray(self.artifact.spec.action.low)
+        high = np.asarray(self.artifact.spec.action.high)
+        outside = (actions <= low) | (actions >= high)
+        return float(np.mean(outside))
+
     def _stack(self, name: str) -> np.ndarray:
         if not self.episodes:
             raise ValueError("the rollout holds no episodes")
@@ -300,7 +309,7 @@ class ClosedLoopRunner:
         except SolverDivergedError as exc:
             diverged = f"solver exited with code {exc.returncode}"
             logger.warning("Episode %d diverged in %s", index, case_dir)
-        except Exception as exc:  # a launcher failure is not a physics failure
+        except Exception as exc:  # a launcher failure is not a diverged run
             return None, EpisodeFailure(index, case_dir, f"launch failed: {exc}")
 
         try:
