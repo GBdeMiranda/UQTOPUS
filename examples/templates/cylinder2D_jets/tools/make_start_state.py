@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 CONTROLLER_BLOCK = """{
-    {{ controller | indent(4) }}
+        type            uqtopusBoundaryCondition;
         value           uniform (0 0 0);
     }"""
 

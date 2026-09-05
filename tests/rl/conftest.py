@@ -97,7 +97,7 @@ def make_runner(simulator, spec, run_fn=None, **kwargs) -> ClosedLoopRunner:
     return ClosedLoopRunner(
         simulator=simulator,
         spec=spec,
-        controller_keys="0__U__controller",
+        controller_keys="system__controlDict__controller",
         run_fn=fake_solver(spec) if run_fn is None else run_fn,
         **kwargs,
     )
@@ -116,8 +116,8 @@ def artifact(spec, tmp_path):
 @pytest.fixture
 def simulator(tmp_path) -> OpenFOAMSimulator:
     template = tmp_path / "template"
-    (template / "0").mkdir(parents=True)
-    (template / "0" / "U").write_text("jet1\n{\n{{ controller }}\n}\n")
+    (template / "system").mkdir(parents=True)
+    (template / "system" / "controlDict").write_text("{{ controller }}\n")
     (template / "Allrun").write_text("#!/bin/sh\n")
     return OpenFOAMSimulator(
         template_path=template,

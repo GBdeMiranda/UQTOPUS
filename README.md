@@ -27,7 +27,7 @@ Built on top of `Jinja2`, `xarray` and `fluidfoam`.
 
 ### OpenFOAM
 
-UQTOPUS targets OpenFOAM 9 from the OpenFOAM Foundation (openfoam.org). The case templates and the `uqtopusPolicy` library use that lineage's dialect.
+UQTOPUS targets OpenFOAM 9 from the OpenFOAM Foundation (openfoam.org).
 
 ```bash
 sudo sh -c "wget -O - https://dl.openfoam.org/gpg.key | apt-key add -"
@@ -44,43 +44,6 @@ pip install uqtopus
 ```
 
 Requires Python 3.10 or newer.
-
-## Closed-loop RL: the ONNX boundary condition
-
-Needed only for `uqtopus.rl`, where the policy runs inside the solver. The package ships a small OpenFOAM library that stock `pimpleFoam` loads through the `libs()` line of `controlDict`, adding the `uqtopusBoundaryCondition` boundary condition. The solver itself is not modified.
-
-### 1. Python extras
-
-```bash
-pip install "uqtopus[rl]"
-```
-
-### 2. Build the library
-
-```bash
-uqtopus rl-build --install-onnxruntime
-```
-
-That finds the OpenFOAM installation, downloads the ONNX Runtime C++ package if none is present, compiles, and writes the library where the solver already looks for it. Nothing is installed system-wide and no `sudo` is needed.
-
-Drop `--install-onnxruntime` if you already have the runtime; it is found through `ONNXRUNTIME_ROOT` or under `~/opt`. Useful options:
-
-| option | what it does |
-|---|---|
-| `--check` | run the checks and stop, building nothing |
-| `--foam PATH` | use a specific `etc/bashrc` or installation root |
-| `--onnxruntime PATH` | use a specific ONNX Runtime release |
-
-### 3. Use it in a case
-
-`system/controlDict` loads the library:
-
-```
-application     pimpleFoam;
-libs            ("libuqtopusPolicy.so");
-```
-
-The controlled patch of `0/U` carries the block that `uqtopus.rl.render_controller()` produces. _See `src/uqtopus/policy_src/README.md` for the library_.
 
 ## Basic Usage
 
@@ -194,10 +157,152 @@ UQTOPUS/
 
 3) Place the template under `templates` directory to ensure organization with standard OpenFOAM layout (0/, constant/, system/). The UQ runner will render the Jinja placeholders per sample and invoke your run script.
 
+## Closed-loop RL module
+
+Needed only for `uqtopus.rl`. The package ships an OpenFOAM library that adds the `uqtopusBoundaryCondition` boundary condition. The solver loads it through the `libs()` line of `controlDict`.
+
+### 1. Install it
+
+```bash
+pip install "uqtopus[rl]"
+```
+
+### 2. Build the OF library
+
+Just run
+```bash
+uqtopus rl-build --install-onnxruntime
+```
+to find the OpenFOAM installation, download the ONNX Runtime C++ package if none is present, compile and write the library where the solver already looks for it..
+
+Drop `--install-onnxruntime` if you already have the runtime; it is found through `ONNXRUNTIME_ROOT` or under `~/opt`. Useful options:
+
+| option | what it does |
+|---|---|
+| `--check` | run the checks and stop, building nothing |
+| `--foam PATH` | use a specific `etc/bashrc` or installation root |
+| `--onnxruntime PATH` | use a specific ONNX Runtime release |
+
+### 3. Mark the case
+
+Two lines in `system/controlDict` are **added by the user to a working case**: one to load the library, one to mark where the contract goes.
+```
+application     pimpleFoam;
+libs            ("libuqtopusPolicy.so");
+
+{{ controller }}
+```
+
+Then, just define **each controlled patch names the boundary condition**. It takes the action component of the target that carries its name:
+```
+patch
+{
+    type            uqtopusBoundaryCondition;
+    value           uniform (0 0 0);
+}
+```
+
+### 4. Declare what the policy reads and drives
+
+A `PolicySpec` is the contract both sides read. `ActionSpec` names the patches the action drives, one component each, in the order written. The observation is a list of sources, concatenated in declaration order, and there are two kinds.
+
+`ProbeSource` reads a field at points. The solver samples the field held in memory during the step, so nothing is read back from a written file:
+```python
+import numpy as np
+import uqtopus.rl as rl
+
+upstream = np.array([
+    [-0.8,  0.3, 0.0],  # one row per probe
+    [-0.8, -0.3, 0.0],  # in mesh coordinates: x, y, z
+])
+
+rl.ProbeSource(field_name="p", positions=upstream, name="upstream")
+```
+`name` labels the group in the trajectory columns, which come out as `upstream.p.0` and `upstream.p.1` for each probe.
+
+`RegistrySource` brings in a custom quantity the case computed itself, by the name it stored it under:
+```python
+rl.RegistrySource(name="myCustomSource")
+```
+One source per quantity, so two flow rates means two of these. Use it for what is not a point value of a field: a flux through a patch, a running total, average over a patch or mesh. The case should publish the quantity itself, as section 6 shows.
+
+```python
+spec = rl.PolicySpec(
+    observation=rl.ObservationSpec(
+        sources=(
+            rl.ProbeSource(field_name="p", positions=upstream, name="upstream"),
+            rl.RegistrySource(name="myCustomSource"),
+        )
+    ),
+    action=rl.ActionSpec(name="omega", targets=("patchA", "patchB"), low=-5.0, high=5.0),
+    control_interval=0.5,
+)
+```
+
+### 5. Let `uqtopus` render it!
+
+`uqtopus.rl` fills the placeholder before every episode. The key names where it goes, as `folder__file__variable`:
+
+```python
+runner = rl.ClosedLoopRunner(
+    uqt.OpenFOAMSimulator(case, "Allrun", runs, ["U", "p"]),
+    spec,
+    reward_fn,
+    controller_keys="system__controlDict__controller",
+    function_objects=["forces"],
+)
+```
+
+What lands in the case is the whole contract, so the solver and the network agree on where the observation is measured and what the bounds are:
+```
+uqtopusPolicy
+{
+    type            uqtopusPolicy;
+    policy          "/abs/path/policy.onnx";
+    specHash; controlInterval; startTime; seed; 
+    observation
+    {
+        dim; sources;
+    }
+    action
+    {
+        name; nComponents; distribution; rampFraction; low; high; targets;
+    }
+}
+```
+No worries with the details here, it is all handled by the Python module itself.
+
+### 6. Publish a quantity the mesh does not hold
+
+`RegistrySource` reads a scalar by name, so the case stores it first. OpenFOAM compiles a block of `controlDict` for that, and the case author writes the quantity into it. This one averages a field over the whole mesh, which no single point carries:
+
+```
+myCustomSource
+{
+    type coded;
+    libs ("libutilityFunctionObjects.so");
+
+    codeInclude
+    #{
+        #include "uniformDimensionedFields.H"
+    #};
+
+    codeExecute
+    #{
+        const volScalarField& p = mesh().lookupObject<volScalarField>("p");
+
+        mesh().lookupObjectRef<uniformDimensionedScalarField>("myCustomSource").value() =
+            gSum(p.primitiveField()*mesh().V())/gSum(mesh().V());
+    #};
+}
+```
+
+_See [`src/uqtopus/policy_src/README.md`](src/uqtopus/policy_src/README.md) for the OpenFOAM controller library details_.
+
 ## Examples
 
 See `examples` folder for notebooks with workflow demonstrations.
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License - see [LICENSE](LICENSE) file for details.

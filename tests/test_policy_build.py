@@ -20,7 +20,8 @@ def test_the_cpp_sources_ship_with_the_package():
     assert (sources / "Make" / "options").exists()
     assert sorted(p.name for p in sources.glob("*.C")) == [
         "onnxPolicy.C",
-        "uqtopusBoundaryConditionFvPatchVectorField.C",
+        "uqtopusBoundaryConditionFvPatchField.C",
+        "uqtopusBoundaryConditionFvPatchFields.C",
         "uqtopusController.C",
     ]
 

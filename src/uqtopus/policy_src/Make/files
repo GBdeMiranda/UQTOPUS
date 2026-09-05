@@ -1,5 +1,5 @@
 onnxPolicy.C
 uqtopusController.C
-uqtopusBoundaryConditionFvPatchVectorField.C
+uqtopusBoundaryConditionFvPatchFields.C
 
 LIB = $(FOAM_USER_LIBBIN)/libuqtopusPolicy

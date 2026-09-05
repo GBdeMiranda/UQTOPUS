@@ -3,12 +3,15 @@
 #include "uqtopusController.H"
 #include "addToRunTimeSelectionTable.H"
 #include "volFields.H"
-#include "interpolationCellPoint.H"
+#include "interpolation.H"
+#include "uniformDimensionedFields.H"
 #include "OSspecific.H"
 
 // * * * * * * * * * * * * * * * Static Data  * * * * * * * * * * * * * * * //
 
 const Foam::word Foam::uqtopusController::registryName("uqtopusController");
+
+const Foam::word Foam::uqtopusController::contractName("uqtopusPolicy");
 
 namespace Foam
 {
@@ -36,26 +39,77 @@ void Foam::uqtopusController::readContract(const dictionary& dict)
     }
 
     PtrList<dictionary> sources(obs.lookup("sources"));
-    if (sources.size() != 1 || sources[0].lookup<word>("kind") != "probe")
+    if (sources.empty())
     {
         FatalErrorInFunction
-            << "this controller handles a single probe source" << abort(FatalError);
+            << "the observation carries no source" << abort(FatalError);
     }
-    fieldName_ = sources[0].lookup<word>("fieldName");
-    sourceName_ = sources[0].lookupOrDefault<word>("name", "probes");
-    positions_ = vectorField(sources[0].lookup("positions"));
 
-    if (positions_.size() != obs.lookup<label>("dim"))
+    sources_.setSize(sources.size());
+    forAll(sources, s)
+    {
+        observationSource& source = sources_[s];
+        source.kind = sources[s].lookup<word>("kind");
+        source.name = sources[s].lookupOrDefault<word>("name", "probes");
+
+        if (source.kind == "registry")
+        {
+            continue;
+        }
+        if (source.kind != "probe")
+        {
+            FatalErrorInFunction
+                << "source " << s << " is of kind " << source.kind
+                << ", and this controller reads probe and registry sources"
+                << abort(FatalError);
+        }
+
+        source.fieldName = sources[s].lookup<word>("fieldName");
+        source.interpolation =
+            sources[s].lookupOrDefault<word>("interpolation", "cellPoint");
+        source.positions = vectorField(sources[s].lookup("positions"));
+        source.components =
+            sources[s].lookupOrDefault<labelList>("components", labelList());
+
+        forAll(source.components, c)
+        {
+            if (source.components[c] < 0 || source.components[c] >= vector::nComponents)
+            {
+                FatalErrorInFunction
+                    << "source " << source.name << " asks for component "
+                    << source.components[c] << " of " << source.fieldName
+                    << ", which has " << label(vector::nComponents)
+                    << abort(FatalError);
+            }
+        }
+    }
+
+    if (obsDim() != obs.lookup<label>("dim"))
     {
         FatalErrorInFunction
             << "the observation declares dim " << obs.lookup<label>("dim")
-            << " but carries " << positions_.size() << " probes"
+            << " but its " << sources_.size() << " source(s) carry " << obsDim()
             << abort(FatalError);
     }
 
     const dictionary& act = dict.subDict("action");
     actionName_ = act.lookup<word>("name");
     rampFraction_ = act.lookup<scalar>("rampFraction");
+
+    PtrList<dictionary> targets(act.lookup("targets"));
+    targetNames_.setSize(targets.size());
+    forAll(targets, i)
+    {
+        const label component = targets[i].lookup<label>("component");
+        if (component < 0 || component >= targets.size())
+        {
+            FatalErrorInFunction
+                << "target " << targets[i].lookup<word>("name")
+                << " takes component " << component << " of an action with "
+                << targets.size() << " component(s)" << abort(FatalError);
+        }
+        targetNames_[component] = targets[i].lookup<word>("name");
+    }
     low_ = scalarField(act.lookup("low"));
     high_ = scalarField(act.lookup("high"));
 
@@ -70,26 +124,38 @@ void Foam::uqtopusController::readContract(const dictionary& dict)
 
 void Foam::uqtopusController::locateProbes()
 {
-    cells_.setSize(positions_.size());
-    owners_.setSize(positions_.size());
-    forAll(positions_, i)
+    forAll(sources_, s)
     {
-        cells_[i] = mesh_.findCell(positions_[i]);
-        owners_[i] = cells_[i] >= 0 ? Pstream::myProcNo() : labelMax;
-    }
+        observationSource& source = sources_[s];
 
-    // a point on a processor face is found by both neighbours, so the lowest
-    // rank owns it and the others stay silent
-    Pstream::listCombineGather(owners_, minEqOp<label>());
-    Pstream::listCombineScatter(owners_);
-
-    forAll(positions_, i)
-    {
-        if (owners_[i] == labelMax)
+        if (source.kind == "registry")
         {
-            FatalErrorInFunction
-                << "probe " << i << " at " << positions_[i]
-                << " is outside the mesh" << abort(FatalError);
+            continue;
+        }
+
+        source.cells.setSize(source.positions.size());
+        source.owners.setSize(source.positions.size());
+        forAll(source.positions, i)
+        {
+            source.cells[i] = mesh_.findCell(source.positions[i]);
+            source.owners[i] =
+                source.cells[i] >= 0 ? Pstream::myProcNo() : labelMax;
+        }
+
+        // a point on a processor face is found by both neighbours, so the
+        // lowest rank owns it and the others stay silent
+        Pstream::listCombineGather(source.owners, minEqOp<label>());
+        Pstream::listCombineScatter(source.owners);
+
+        forAll(source.positions, i)
+        {
+            if (source.owners[i] == labelMax)
+            {
+                FatalErrorInFunction
+                    << "probe " << i << " of source " << source.name << " at "
+                    << source.positions[i] << " is outside the mesh"
+                    << abort(FatalError);
+            }
         }
     }
 }
@@ -97,18 +163,74 @@ void Foam::uqtopusController::locateProbes()
 
 Foam::scalarField Foam::uqtopusController::observation() const
 {
-    const volScalarField& field =
-        mesh_.lookupObject<volScalarField>(fieldName_);
-    const interpolationCellPoint<scalar> interpolator(field);
+    scalarField values(obsDim(), 0);
 
-    scalarField values(positions_.size(), 0);
-    forAll(values, i)
+    label offset = 0;
+    forAll(sources_, s)
     {
-        if (owners_[i] == Pstream::myProcNo())
+        const observationSource& source = sources_[s];
+
+        if (source.kind == "registry")
         {
-            values[i] = interpolator.interpolate(positions_[i], cells_[i]);
+            // every rank holds the same value, and the reduction below sums
+            if (Pstream::master())
+            {
+                values[offset] = mesh_.lookupObject<uniformDimensionedScalarField>
+                (
+                    source.name
+                ).value();
+            }
         }
+        else if (source.components.empty())
+        {
+            const volScalarField& field =
+                mesh_.lookupObject<volScalarField>(source.fieldName);
+            const autoPtr<interpolation<scalar>> interpolator
+            (
+                interpolation<scalar>::New(source.interpolation, field)
+            );
+
+            forAll(source.positions, i)
+            {
+                if (source.owners[i] == Pstream::myProcNo())
+                {
+                    values[offset + i] = interpolator->interpolate
+                    (
+                        source.positions[i], source.cells[i]
+                    );
+                }
+            }
+        }
+        else
+        {
+            const volVectorField& field =
+                mesh_.lookupObject<volVectorField>(source.fieldName);
+            const autoPtr<interpolation<vector>> interpolator
+            (
+                interpolation<vector>::New(source.interpolation, field)
+            );
+            const label nComponents = source.components.size();
+
+            forAll(source.positions, i)
+            {
+                if (source.owners[i] == Pstream::myProcNo())
+                {
+                    const vector sampled(interpolator->interpolate
+                    (
+                        source.positions[i], source.cells[i]
+                    ));
+                    forAll(source.components, c)
+                    {
+                        values[offset + i*nComponents + c] =
+                            sampled[source.components[c]];
+                    }
+                }
+            }
+        }
+
+        offset += source.size();
     }
+
     Pstream::listCombineGather(values, plusEqOp<scalar>());
     Pstream::listCombineScatter(values);
 
@@ -138,9 +260,32 @@ void Foam::uqtopusController::writeRow
             << "# specHash         " << specHash_ << nl
             << "# seed             " << seed_ << nl
             << "# columns          time";
-        forAll(observation, i)
+        forAll(sources_, s)
         {
-            os << ' ' << sourceName_ << '.' << fieldName_ << '.' << i;
+            const observationSource& source = sources_[s];
+
+            if (source.kind == "registry")
+            {
+                os << ' ' << source.name;
+                continue;
+            }
+
+            forAll(source.positions, i)
+            {
+                if (source.components.empty())
+                {
+                    os << ' ' << source.name << '.' << source.fieldName
+                       << '.' << i;
+                }
+                else
+                {
+                    forAll(source.components, c)
+                    {
+                        os << ' ' << source.name << '.' << source.fieldName
+                           << source.components[c] << '.' << i;
+                    }
+                }
+            }
         }
         if (action.size() == 1)
         {
@@ -218,12 +363,12 @@ Foam::uqtopusController::uqtopusController
             << " but the case dictionary declares " << specHash_
             << abort(FatalError);
     }
-    if (policy_->obsDim() != positions_.size())
+    if (policy_->obsDim() != obsDim())
     {
         FatalErrorInFunction
             << policyPath_ << " expects " << policy_->obsDim()
-            << " observations but the dictionary lists " << positions_.size()
-            << " probes" << abort(FatalError);
+            << " observations but the dictionary carries " << obsDim()
+            << abort(FatalError);
     }
 
     actionOld_.setSize(policy_->actDim(), 0);
@@ -231,7 +376,8 @@ Foam::uqtopusController::uqtopusController
     action_.setSize(policy_->actDim(), 0);
 
     Info<< "uqtopusController: " << policyPath_ << ", contract "
-        << policy_->specHash() << ", " << policy_->obsDim() << " probes, "
+        << policy_->specHash() << ", " << policy_->obsDim()
+        << " observation(s) from " << sources_.size() << " source(s), "
         << policy_->actDim() << " action component(s), every "
         << controlInterval_ << endl;
 }
@@ -242,6 +388,41 @@ Foam::uqtopusController::~uqtopusController()
 
 
 // * * * * * * * * * * * * * * * Member Functions  * * * * * * * * * * * * * //
+
+const Foam::dictionary& Foam::uqtopusController::contractDict(const fvMesh& mesh)
+{
+    const dictionary& controlDict = mesh.time().controlDict();
+
+    if (!controlDict.found(contractName))
+    {
+        FatalErrorInFunction
+            << "controlDict has no " << contractName << " entry. That entry "
+            << "carries the policy, the observation and the action, and "
+            << "without it nothing can be controlled." << abort(FatalError);
+    }
+
+    return controlDict.subDict(contractName);
+}
+
+
+const Foam::uqtopusController& Foam::uqtopusController::New(const fvMesh& mesh)
+{
+    return New(mesh, contractDict(mesh));
+}
+
+
+Foam::label Foam::uqtopusController::component(const word& target) const
+{
+    forAll(targetNames_, i)
+    {
+        if (targetNames_[i] == target)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
 
 const Foam::uqtopusController& Foam::uqtopusController::New
 (
@@ -275,6 +456,17 @@ const Foam::uqtopusController& Foam::uqtopusController::New
 Foam::label Foam::uqtopusController::actDim() const
 {
     return action_.size();
+}
+
+
+Foam::label Foam::uqtopusController::obsDim() const
+{
+    label n = 0;
+    forAll(sources_, s)
+    {
+        n += sources_[s].size();
+    }
+    return n;
 }
 
 

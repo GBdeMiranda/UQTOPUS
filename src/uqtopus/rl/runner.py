@@ -154,7 +154,8 @@ class ClosedLoopRunner:
         reward_fn (callable): maps the trajectory, with any requested
             functionObject output merged in, to one reward per control step.
         controller_keys (str or sequence of str): where the controller block is
-            rendered, in 'folder__file__variable' form, e.g. '0__U__controller'.
+            rendered, in 'folder__file__variable' form, e.g.
+            'system__controlDict__controller'.
         function_objects (sequence of str): functionObject names read from each
             case and aligned onto the control steps before reward_fn sees them.
         run_fn (callable or None): executes a case, as run_fn(case_dir, params).

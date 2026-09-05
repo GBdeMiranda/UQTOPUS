@@ -91,19 +91,29 @@ application     pimpleFoam;
 libs            ("libuqtopusPolicy.so");
 ```
 
-The `libs` entry is what puts `uqtopusBoundaryCondition` in the table of boundary condition types. Without it the run stops while reading `0/U`, printing every type OpenFOAM does know. In `0.orig/U`, the patch entry is what `uqtopus.rl.render_controller()` produces, plus a `value`:
+The `libs` entry is what puts `uqtopusBoundaryCondition` in the table of boundary condition types. Without it the run stops while reading `0/U`, printing every type OpenFOAM does know.
+
+The contract is a top level entry of the same `controlDict`, named `uqtopusPolicy`, and it is what `uqtopus.rl.render_controller()` produces. OpenFOAM ignores entries it does not know, and the controller reads this one itself:
+
+```
+uqtopusPolicy
+{
+    policy          "/abs/path/policy.onnx";
+    specHash        "a1b2c3d4e5f60718";
+    controlInterval 0.4;
+    startTime       0;
+    seed            7;
+    observation     { ... }
+    action          { ... }
+}
+```
+
+A patch then carries only its type, and takes the component of the target that carries its name. `action` names the target when the two differ:
 
 ```
     actuator
     {
         type            uqtopusBoundaryCondition;
-        policy          "/abs/path/policy.onnx";
-        specHash        "a1b2c3d4e5f60718";
-        controlInterval 0.4;
-        startTime       0;
-        seed            7;
-        observation     { ... }
-        action          { ... }
         value           uniform (0 0 0);
     }
 ```

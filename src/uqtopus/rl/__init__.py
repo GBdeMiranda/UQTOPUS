@@ -12,6 +12,7 @@ from .spec import (
     ObservationSpec,
     PolicySpec,
     ProbeSource,
+    RegistrySource,
 )
 from .export import (
     Normalization,
@@ -51,6 +52,7 @@ __all__ = [
     "PolicyArtifact",
     "PolicySpec",
     "ProbeSource",
+    "RegistrySource",
     "Rollout",
     "RunningStatistics",
     "TrainingLog",

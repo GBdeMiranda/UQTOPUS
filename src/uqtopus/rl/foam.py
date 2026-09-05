@@ -111,7 +111,7 @@ def controller_mapping(
     spec: PolicySpec,
     policy: str | Path,
     *,
-    controller_type: str = "uqtopusBoundaryCondition",
+    controller_type: str = "uqtopusPolicy",
     seed: int | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -162,8 +162,8 @@ def render_controller(
     spec: PolicySpec,
     policy: str | Path,
     *,
-    name: str | None = None,
-    controller_type: str = "uqtopusBoundaryCondition",
+    name: str | None = "uqtopusPolicy",
+    controller_type: str = "uqtopusPolicy",
     seed: int | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> str:
@@ -174,8 +174,9 @@ def render_controller(
         spec (PolicySpec): the contract. Its hash is written into the block, so
             a case dictionary that drifts from the policy is caught at startup.
         policy (str or Path): path to the .onnx file, as the solver will see it.
-        name (str or None): wrap the entries in a named sub-dictionary. None
-            emits bare entries, which is what a boundaryField entry wants.
+        name (str or None): wrap the entries in a named sub-dictionary. The
+            solver looks the contract up in controlDict under this name. None
+            emits bare entries.
         controller_type (str): the 'type' entry the solver dispatches on.
             Defaults to the ONNX policy; an MPC controller reusing the same
             observation and action plumbing would pass its own.
@@ -205,9 +206,10 @@ def controller_params(
 
     Parameters:
         keys (str or sequence of str): template keys in the package's
-            'folder__file__variable' form, e.g. '0__U__controller' to fill a
-            {{ controller }} placeholder in the case's 0/U file. Several keys
-            render the same block into several files.
+            'folder__file__variable' form, e.g.
+            'system__controlDict__controller' to fill a {{ controller }}
+            placeholder in the case's system/controlDict. Several keys render
+            the same block into several files.
     """
     block = render_controller(spec, policy, **kwargs)
     if isinstance(keys, str):

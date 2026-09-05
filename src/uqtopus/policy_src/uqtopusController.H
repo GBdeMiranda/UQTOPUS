@@ -44,11 +44,37 @@ class uqtopusController
 
         const fvMesh& mesh_;
 
+        //- One source of observation, of one of two kinds. A probe reads a
+        //  field at points, and an empty components list means that field is
+        //  scalar. A registry source reads one scalar the case published under
+        //  a name.
+        struct observationSource
+        {
+            word kind;
+            word name;
+
+            //- Probe only
+            word fieldName;
+            word interpolation;
+            labelList components;
+            vectorField positions;
+
+            //- Cell holding each probe, and the process that owns it
+            labelList cells;
+            labelList owners;
+
+            //- How many numbers this source contributes
+            label size() const
+            {
+                return kind == "registry"
+                    ? 1
+                    : positions.size()*max(components.size(), label(1));
+            }
+        };
+
         //- Everything read from the dictionary
         fileName policyPath_;
         word specHash_;
-        word fieldName_;
-        word sourceName_;
         word actionName_;
         scalar controlInterval_;
         scalar startTime_;
@@ -59,11 +85,12 @@ class uqtopusController
         scalarField high_;
         label seed_;
         bool deterministic_;
-        vectorField positions_;
 
-        //- Cell holding each probe, and the process that owns it
-        labelList cells_;
-        labelList owners_;
+        //- Concatenated in declaration order to form the observation
+        List<observationSource> sources_;
+
+        //- Target names, in action component order
+        wordList targetNames_;
 
         //- Set once per control step, then held
         mutable scalarField actionOld_;
@@ -95,6 +122,9 @@ public:
     //- Name this object is registered under
     static const word registryName;
 
+    //- Name of the controlDict entry that carries the contract
+    static const word contractName;
+
     TypeName("uqtopusController");
 
 
@@ -116,12 +146,31 @@ public:
         //- Find the controller in the registry, creating it on first use
         static const uqtopusController& New(const fvMesh&, const dictionary&);
 
+        //- Find the controller in the registry, creating it from the contract
+        //  that controlDict carries
+        static const uqtopusController& New(const fvMesh&);
+
+        //- The contract block, the contractName entry of controlDict
+        static const dictionary& contractDict(const fvMesh&);
+
+        //- Which component of the action drives the named target, -1 if none
+        label component(const word& target) const;
+
+        //- Target names, in action component order
+        const wordList& targetNames() const
+        {
+            return targetNames_;
+        }
+
         const word& specHash() const
         {
             return specHash_;
         }
 
         label actDim() const;
+
+        //- Length of the observation, over every source
+        label obsDim() const;
 
         //- Decide if a control step is due, then return the ramped action.
         //  Safe to call many times per time step and from many users.

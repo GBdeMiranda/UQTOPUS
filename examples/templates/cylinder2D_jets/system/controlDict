@@ -46,9 +46,10 @@ timePrecision   8;
 
 runTimeModifiable true;
 
-// Loads the uqtopusBoundaryCondition boundary condition. Without it the run stops at the jet
-// patch with a list of the boundary condition types OpenFOAM does know.
+// Loads the uqtopusBoundaryCondition boundary condition
 libs            ("libuqtopusPolicy.so");
+
+{{ controller }}
 
 functions
 {

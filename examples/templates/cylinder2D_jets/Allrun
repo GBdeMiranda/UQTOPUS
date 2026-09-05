@@ -3,7 +3,7 @@ cd "${0%/*}" || exit                                # Run from this directory
 . ${WM_PROJECT_DIR:?}/bin/tools/RunFunctions        # Tutorial run functions
 #------------------------------------------------------------------------------
 
-# One episode. uqtopus renders the controller into 0.orig/U before this runs.
+# One episode. uqtopus renders the controller into system/controlDict before this runs.
 
 [ -d constant/polyMesh ] || ./Allmesh
 

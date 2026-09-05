@@ -24,15 +24,19 @@ class ProbeSource:
     Parameters:
         field_name (str): OpenFOAM field name.
         positions (sequence of (x, y, z)): probe locations, in declaration order.
-        components (sequence of int or None): for vector/tensor fields, which
-            components to keep. None means the field is scalar (one component).
+        components (sequence of int or None): for a vector field, which of its
+            three components to keep. None means the field is scalar.
         name (str): label used in trajectory column names.
+        interpolation (str): OpenFOAM interpolation scheme the solver reads the
+            field with, 'cell' for the value of the cell holding the point,
+            'cellPoint' for one that follows where inside the cell it lies.
     """
 
     field_name: str
     positions: tuple[Vec3, ...]
     components: tuple[int, ...] | None = None
     name: str = "probes"
+    interpolation: str = "cellPoint"
 
     kind: ClassVar[str] = "probe"
 
@@ -42,6 +46,12 @@ class ProbeSource:
         )
         if self.components is not None:
             object.__setattr__(self, "components", tuple(int(c) for c in self.components))
+            for c in self.components:
+                if not 0 <= c < 3:
+                    raise ValueError(
+                        f"Component {c} is out of range; the solver reads vector "
+                        "fields, whose components are 0, 1 and 2"
+                    )
         if not self.positions:
             raise ValueError("ProbeSource requires at least one position")
         for p in self.positions:
@@ -71,6 +81,7 @@ class ProbeSource:
             "positions": [list(p) for p in self.positions],
             "components": list(self.components) if self.components else None,
             "name": self.name,
+            "interpolation": self.interpolation,
         }
 
     @classmethod
@@ -78,6 +89,50 @@ class ProbeSource:
         payload = dict(data)
         payload.pop("kind", None)
         return cls(**payload)
+
+
+@dataclass(frozen=True)
+class RegistrySource:
+    """
+    One scalar the case publishes under a name, read by the solver at control
+    time.
+
+    Whatever computes it, a functionObject of the case among others, has to
+    store it in the mesh registry before the control step reads it.
+
+    Parameters:
+        name (str): name the scalar is registered under, also the trajectory
+            column name.
+    """
+
+    name: str
+
+    kind: ClassVar[str] = "registry"
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("RegistrySource requires a name")
+
+    @property
+    def size(self) -> int:
+        return 1
+
+    def component_names(self) -> list[str]:
+        return [self.name]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": self.kind, "name": self.name}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RegistrySource":
+        payload = dict(data)
+        payload.pop("kind", None)
+        return cls(**payload)
+
+
+Source = ProbeSource | RegistrySource
+
+_SOURCE_TYPES = {ProbeSource.kind: ProbeSource, RegistrySource.kind: RegistrySource}
 
 
 # Observation / action specs
@@ -91,10 +146,11 @@ class ObservationSpec:
     order.
 
     Parameters:
-        sources (sequence of ProbeSource): measurements, in canonical order.
+        sources (sequence of ProbeSource or RegistrySource): measurements, in
+            canonical order.
     """
 
-    sources: tuple[ProbeSource, ...]
+    sources: tuple[Source, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sources", tuple(self.sources))
@@ -113,7 +169,12 @@ class ObservationSpec:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ObservationSpec":
-        return cls(sources=tuple(ProbeSource.from_dict(d) for d in data["sources"]))
+        return cls(
+            sources=tuple(
+                _SOURCE_TYPES[d.get("kind", ProbeSource.kind)].from_dict(d)
+                for d in data["sources"]
+            )
+        )
 
 
 @dataclass(frozen=True)

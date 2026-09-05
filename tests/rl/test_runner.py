@@ -159,12 +159,10 @@ def test_spaces_come_from_the_spec_and_the_stub_env_refuses_to_step(coeff_runner
 # ---------------------------------------------------------------------------
 
 def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
-    """The default run_fn: rsync the template, render 0/U, run the solver script."""
+    """The default run_fn: rsync the template, render controlDict, run the solver script."""
     template = tmp_path / "template"
-    (template / "0").mkdir(parents=True)
-    (template / "0" / "U").write_text(
-        "boundaryField\n{\n    jet1\n    {\n{{ controller }}\n    }\n}\n"
-    )
+    (template / "system").mkdir(parents=True)
+    (template / "system" / "controlDict").write_text("{{ controller }}\n")
 
     # the "solver" copies the rendered dictionary aside and writes a trajectory
     steps = 4
@@ -181,7 +179,7 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
     allrun.write_text(
         "#!/bin/sh\n"
         "set -e\n"
-        "cp 0/U rendered_U\n"
+        "cp system/controlDict rendered_controlDict\n"
         "mkdir -p postProcessing/uqtopusPolicy/0\n"
         "{\n"
         f'  echo "# specHash {spec.hash}"\n'
@@ -201,12 +199,12 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
         simulator=simulator,
         spec=spec,
         reward_fn=lambda ds: np.zeros(ds.sizes["time"]),
-        controller_keys="0__U__controller",
+        controller_keys="system__controlDict__controller",
     )
 
     rollout = runner.collect(artifact, n_episodes=1, seeds=[99])
 
-    rendered = (tmp_path / "runs" / "iter0000_ep00" / "rendered_U").read_text()
+    rendered = (tmp_path / "runs" / "iter0000_ep00" / "rendered_controlDict").read_text()
     assert spec.hash in rendered
     assert "seed            99;" in rendered
     assert str(artifact.path.resolve()) in rendered
