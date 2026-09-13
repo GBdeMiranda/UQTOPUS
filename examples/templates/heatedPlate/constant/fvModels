@@ -1,0 +1,43 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  9
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      fvModels;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+// The heater adds S, in degrees per second, to the temperature equation in the
+// cell zone heater. With a controller rendered, the policy sets S every control
+// step; otherwise S is the fixed value given.
+
+heater
+{
+    selectionMode   cellZone;
+    cellZone        heater;
+    volumeMode      specific;
+{% if controller is defined %}
+    type            uqtopusSource;
+    field           T;
+{% else %}
+    type            semiImplicitSource;
+    sources
+    {
+        T
+        {
+            explicit    {{ S }};
+            implicit    0;
+        }
+    }
+{% endif %}
+}
+
+
+// ************************************************************************* //

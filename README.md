@@ -128,12 +128,12 @@ UQTOPUS/
      transportModel  {{ transportModel | default('Newtonian') }};
      nu              [0 2 -1 0 0 0 0] {{ nu | default(1e-5) }};
      ```
-   - Example with conditionals (constant/turbulenceProperties):
+   - Example with conditionals (constant/momentumTransport):
      ```foam
      simulationType RAS;
      RAS
      {
-       RASModel      {% if turbulence == "kEpsilon" %}kEpsilon{% else %}kOmegaSST{% endif %};
+       model         {% if turbulence == "kEpsilon" %}kEpsilon{% else %}kOmegaSST{% endif %};
        turbulence    on;
        printCoeffs   on;
      }
@@ -193,11 +193,12 @@ libs            ("libuqtopusPolicy.so");
 {{ controller }}
 ```
 
-Then, just define **each controlled patch names the boundary condition**. It takes the action component of the target that carries its name:
+Then, just define **each controlled patch names the boundary condition**. It takes the action component of the target that carries its name and writes `direction` times that component. `direction` is required on a vector field:
 ```
 patch
 {
     type            uqtopusBoundaryCondition;
+    direction       (1 0 0);
     value           uniform (0 0 0);
 }
 ```

@@ -80,8 +80,6 @@ Foam::tmp<Foam::scalarField> Foam::onnxPolicy::act
         obs[i] = float(observation[i]);
     }
 
-    // one draw per action component, Box-Muller over two uniforms, so this
-    // uses only scalar01()
     std::vector<float> noise(actDim_, 0.0f);
     if (!deterministic)
     {

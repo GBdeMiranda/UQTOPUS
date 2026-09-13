@@ -9,14 +9,9 @@
 template<class Type>
 Type Foam::uqtopusDirection(const dictionary& dict)
 {
-    return dict.lookupOrDefault<Type>("direction", pTraits<Type>::one);
-}
-
-
-template<>
-Foam::vector Foam::uqtopusDirection<Foam::vector>(const dictionary& dict)
-{
-    return dict.lookupOrDefault<vector>("direction", vector(0, 1, 0));
+    return pTraits<Type>::rank == 0
+        ? dict.lookupOrDefault<Type>("direction", pTraits<Type>::one)
+        : dict.lookup<Type>("direction");
 }
 
 
@@ -68,10 +63,10 @@ uqtopusBoundaryConditionFvPatchField
     fixedValueFvPatchField<Type>(p, iF),
     dict_(),
     component_(0),
-    direction_(pTraits<Type>::one),
+    direction_(pTraits<Type>::zero),
     rotating_(false),
     origin_(Zero),
-    axis_(0, 0, 1),
+    axis_(Zero),
     controller_(nullptr)
 {}
 
@@ -85,21 +80,24 @@ uqtopusBoundaryConditionFvPatchField
     const dictionary& dict
 )
 :
-    fixedValueFvPatchField<Type>(p, iF, dict, false),
+    fixedValueFvPatchField<Type>(p, iF, dict),
     dict_(dict),
     component_(-1),
-    direction_(uqtopusDirection<Type>(dict)),
+    direction_
+    (
+        dict.found("origin")
+      ? pTraits<Type>::zero
+      : uqtopusDirection<Type>(dict)
+    ),
     rotating_(dict.found("origin")),
-    origin_(dict.lookupOrDefault<vector>("origin", Zero)),
-    axis_(dict.lookupOrDefault<vector>("axis", vector(0, 0, 1))),
+    origin_(rotating_ ? dict.lookup<vector>("origin") : vector::zero),
+    axis_(rotating_ ? dict.lookup<vector>("axis") : vector::zero),
     controller_(&uqtopusController::New(p.boundaryMesh().mesh()))
 {
     // write() puts these two back itself
     dict_.remove("type");
     dict_.remove("value");
 
-    // a patch usually carries the name of the target it drives, so the entry
-    // is only needed when the two differ
     const word target(dict.lookupOrDefault<word>("action", p.name()));
     component_ = controller_->component(target);
 
@@ -116,17 +114,6 @@ uqtopusBoundaryConditionFvPatchField
             << "patch " << p.name() << " takes action component " << component_
             << " but the policy returns " << controller_->actDim()
             << " component(s)" << abort(FatalError);
-    }
-
-    // no updateCoeffs() here: the field the controller observes is not
-    // registered yet while this field is still being constructed
-    if (dict.found("value"))
-    {
-        fvPatchField<Type>::operator=(Field<Type>("value", dict, p.size()));
-    }
-    else
-    {
-        fvPatchField<Type>::operator=(pTraits<Type>::zero);
     }
 }
 
@@ -181,20 +168,22 @@ void Foam::uqtopusBoundaryConditionFvPatchField<Type>::updateCoeffs()
         return;
     }
 
-    // the controller decides at most once per time step, no matter how many
-    // targets ask it or how many times each one asks
-    const scalar a = controller_->action()[component_];
+    // the patch keeps its dictionary value until the first decision
+    if (controller_->active())
+    {
+        const scalar a = controller_->action()[component_];
 
-    if (rotating_)
-    {
-        Field<Type>::operator=
-        (
-            uqtopusRotation<Type>(this->patch(), a, origin_, axis_)
-        );
-    }
-    else
-    {
-        Field<Type>::operator=(direction_*a);
+        if (rotating_)
+        {
+            Field<Type>::operator=
+            (
+                uqtopusRotation<Type>(this->patch(), a, origin_, axis_)
+            );
+        }
+        else
+        {
+            Field<Type>::operator=(direction_*a);
+        }
     }
 
     fixedValueFvPatchField<Type>::updateCoeffs();

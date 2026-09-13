@@ -23,6 +23,7 @@ def test_the_cpp_sources_ship_with_the_package():
         "uqtopusBoundaryConditionFvPatchField.C",
         "uqtopusBoundaryConditionFvPatchFields.C",
         "uqtopusController.C",
+        "uqtopusSource.C",
     ]
 
 

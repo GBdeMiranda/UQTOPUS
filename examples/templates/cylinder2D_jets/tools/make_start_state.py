@@ -18,6 +18,7 @@ from pathlib import Path
 
 CONTROLLER_BLOCK = """{
         type            uqtopusBoundaryCondition;
+        direction       (0 1 0);
         value           uniform (0 0 0);
     }"""
 

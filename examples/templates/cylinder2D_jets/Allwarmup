@@ -8,9 +8,9 @@ cd "${0%/*}" || exit                                # Run from this directory
 # pays for the transient again. The force history left in warmup/postProcessing
 # is the uncontrolled baseline the reward offset comes from.
 #
-# Runs in warmup/, a case built from the parts this needs, because 0.orig/U
-# carries a Jinja2 placeholder that OpenFOAM cannot read and system/controlDict
-# is the one an episode uses.
+# Runs in warmup/, a case built from the parts this needs, because
+# system/controlDict carries a Jinja2 placeholder that OpenFOAM cannot read,
+# and controlDict.warmup replaces it there.
 
 [ -d constant/polyMesh ] || ./Allmesh
 

@@ -142,8 +142,7 @@ void Foam::uqtopusController::locateProbes()
                 source.cells[i] >= 0 ? Pstream::myProcNo() : labelMax;
         }
 
-        // a point on a processor face is found by both neighbours, so the
-        // lowest rank owns it and the others stay silent
+        // a point on a processor face is found on both sides, the lowest rank owns it
         Pstream::listCombineGather(source.owners, minEqOp<label>());
         Pstream::listCombineScatter(source.owners);
 
@@ -172,7 +171,7 @@ Foam::scalarField Foam::uqtopusController::observation() const
 
         if (source.kind == "registry")
         {
-            // every rank holds the same value, and the reduction below sums
+            // every rank holds the value and the reduction sums
             if (Pstream::master())
             {
                 values[offset] = mesh_.lookupObject<uniformDimensionedScalarField>
@@ -302,8 +301,6 @@ void Foam::uqtopusController::writeRow
         os.precision(10);
     }
 
-    // stamped with the end of the interval this action governs, so that a
-    // reward averaged over that interval lines up with it
     OFstream& os = *trajectory_;
     os << startTime_ + nActions_*controlInterval_;
     forAll(observation, i)
@@ -335,7 +332,7 @@ Foam::uqtopusController::uqtopusController
             mesh,
             IOobject::NO_READ,
             IOobject::NO_WRITE,
-            true                    // registered, so the registry owns this
+            true
         )
     ),
     mesh_(mesh),
@@ -396,9 +393,8 @@ const Foam::dictionary& Foam::uqtopusController::contractDict(const fvMesh& mesh
     if (!controlDict.found(contractName))
     {
         FatalErrorInFunction
-            << "controlDict has no " << contractName << " entry. That entry "
-            << "carries the policy, the observation and the action, and "
-            << "without it nothing can be controlled." << abort(FatalError);
+            << "controlDict has no " << contractName << " entry"
+            << abort(FatalError);
     }
 
     return controlDict.subDict(contractName);
@@ -432,8 +428,7 @@ const Foam::uqtopusController& Foam::uqtopusController::New
 {
     if (!mesh.foundObject<uqtopusController>(registryName))
     {
-        // registered in the constructor, so the registry owns it and deletes
-        // it with the mesh. Not a leak.
+        // registered in the constructor
         new uqtopusController(mesh, dict);
     }
 
@@ -445,7 +440,6 @@ const Foam::uqtopusController& Foam::uqtopusController::New
         FatalErrorInFunction
             << "two users of the policy declare different contracts, "
             << controller.specHash() << " and " << dict.lookup<word>("specHash")
-            << ". Every target of one action must carry the same block."
             << abort(FatalError);
     }
 
@@ -470,64 +464,89 @@ Foam::label Foam::uqtopusController::obsDim() const
 }
 
 
-const Foam::scalarField& Foam::uqtopusController::action() const
+void Foam::uqtopusController::update() const
 {
     const Time& runTime = mesh_.time();
     const label timeIndex = runTime.timeIndex();
 
-    // every target calls this every time step, and the pressure-velocity
-    // coupling calls each of them several times per time step
+    // once per time step
     if (curTimeIndex_ == timeIndex)
     {
-        return action_;
+        return;
     }
+    curTimeIndex_ = timeIndex;
 
     const scalar t = runTime.value();
     const scalar dt = runTime.deltaTValue();
 
-    const bool started = t >= startTime_ - 0.5*dt;
-    const bool finished = hasEndTime_ && t > endTime_ + 0.5*dt;
-
-    // an action decided on the last time step governs an interval the run
-    // never reaches, so it is never applied and must not be recorded either
-    const bool lastStep = t > runTime.endTime().value() - 0.5*dt;
-
-    if (started && !finished)
+    if (t < startTime_ - 0.5*dt)
     {
-        if (!lastStep && t >= startTime_ + nActions_*controlInterval_ - 0.5*dt)
-        {
-            const scalarField obs(observation());
-
-            // only the master draws, otherwise every process would hold a
-            // different action
-            if (Pstream::master())
-            {
-                actionOld_ = actionNew_;
-                actionNew_ = policy_->act(obs, deterministic_);
-                nActions_++;
-                writeRow(obs, actionNew_);
-            }
-            Pstream::scatter(actionOld_);
-            Pstream::scatter(actionNew_);
-            Pstream::scatter(nActions_);
-        }
-
-        scalar ramp = 1;
-        if (rampFraction_ > 0 && nActions_ > 0)
-        {
-            const scalar since =
-                t - (startTime_ + (nActions_ - 1)*controlInterval_);
-            ramp = min(max(since/(rampFraction_*controlInterval_), 0), 1);
-        }
-        action_ = ramp*actionNew_ + (1 - ramp)*actionOld_;
-
-        forAll(action_, i)
-        {
-            action_[i] = min(max(action_[i], low_[i]), high_[i]);
-        }
+        return;
+    }
+    if (hasEndTime_ && t > endTime_ + 0.5*dt)
+    {
+        return;
     }
 
-    curTimeIndex_ = timeIndex;
+    const bool lastStep = t > runTime.endTime().value() - 0.5*dt;
+
+    if (!lastStep && t >= startTime_ + nActions_*controlInterval_ - 0.5*dt)
+    {
+        const scalarField obs(observation());
+
+        if (Pstream::master())
+        {
+            actionOld_ = actionNew_;
+            actionNew_ = policy_->act(obs, deterministic_);
+            nActions_++;
+            writeRow(obs, actionNew_);
+        }
+        Pstream::scatter(actionOld_);
+        Pstream::scatter(actionNew_);
+        Pstream::scatter(nActions_);
+    }
+
+    if (nActions_ == 0)
+    {
+        return;
+    }
+
+    // the first decision has nothing to ramp from
+    scalar ramp = 1;
+    if (rampFraction_ > 0 && nActions_ > 1)
+    {
+        const scalar since =
+            t - (startTime_ + (nActions_ - 1)*controlInterval_);
+        ramp = min(max(since/(rampFraction_*controlInterval_), 0), 1);
+    }
+    action_ = ramp*actionNew_ + (1 - ramp)*actionOld_;
+
+    forAll(action_, i)
+    {
+        action_[i] = min(max(action_[i], low_[i]), high_[i]);
+    }
+}
+
+
+bool Foam::uqtopusController::active() const
+{
+    update();
+    return nActions_ > 0;
+}
+
+
+const Foam::scalarField& Foam::uqtopusController::action() const
+{
+    update();
+
+    if (nActions_ == 0)
+    {
+        FatalErrorInFunction
+            << "action() called at t = " << mesh_.time().value()
+            << ", before the first control step at " << startTime_
+            << "; check active() first" << abort(FatalError);
+    }
+
     return action_;
 }
 
