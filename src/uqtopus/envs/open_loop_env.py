@@ -1,8 +1,9 @@
 """
-OpenFOAM Gymnasium Environment
+Open-Loop OpenFOAM Gymnasium Environment
 
-Wraps OpenFOAMSimulator as a gymnasium.Env for deep RL training.
-Each step() corresponds to one full OpenFOAM simulation run.
+Wraps OpenFOAMSimulator as a gymnasium.Env whose action is a set of case
+parameters. One step() is one full OpenFOAM run with those parameters, so the
+action is fixed for the whole run.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ try:
     from gymnasium import spaces
 except ImportError as exc:
     raise ImportError(
-        "gymnasium is required for OpenFOAMEnv. "
+        "gymnasium is required for OpenLoopEnv. "
         "Install it with: pip install uqtopus[rl]"
     ) from exc
 
@@ -27,9 +28,9 @@ from ..simulation import OpenFOAMSimulator
 logger = logging.getLogger(__name__)
 
 
-class OpenFOAMEnv(gym.Env):
+class OpenLoopEnv(gym.Env):
     """
-    Gymnasium environment wrapping an OpenFOAM simulation.
+    Gymnasium environment wrapping one OpenFOAM run per step.
 
     Parameters:
         simulator (OpenFOAMSimulator)
@@ -239,7 +240,7 @@ class OpenFOAMEnv(gym.Env):
     def __repr__(self) -> str:
         """Return a string representation of the environment."""
         return (
-            f"OpenFOAMEnv("
+            f"OpenLoopEnv("
             f"params={self.param_keys}, "
             f"obs_shape={self.observation_space.shape}, "
             f"max_steps={self.max_episode_steps})"

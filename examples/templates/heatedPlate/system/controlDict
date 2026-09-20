@@ -57,6 +57,40 @@ functions
         fields          (T);
         probeLocations  ((0.05 0.05 0.0008));
     }
+
+    // Mean temperature over the plate, read by the policy as a RegistrySource under this name.
+    // This registered name must match the C++ IOobject, the lookupObjectRef, and the policy specification.
+    plateMean
+    {
+        type            coded;
+        libs            ("libutilityFunctionObjects.so");
+
+        codeInclude
+        #{
+            #include "uniformDimensionedFields.H"
+        #};
+
+        codeRead
+        #{
+            if (!mesh().foundObject<uniformDimensionedScalarField>("plateMean"))
+            {
+                uniformDimensionedScalarField* mean = new uniformDimensionedScalarField
+                (
+                    IOobject("plateMean", mesh().time().constant(), mesh()),
+                    dimensionedScalar("plateMean", dimTemperature, 0)
+                );
+                mean->store();
+            }
+        #};
+
+        codeExecute
+        #{
+            const volScalarField& T = mesh().lookupObject<volScalarField>("T");
+
+            mesh().lookupObjectRef<uniformDimensionedScalarField>("plateMean").value() =
+                gSum(T.primitiveField()*mesh().V())/gSum(mesh().V());
+        #};
+    }
 }
 
 {{ controller }}

@@ -2,6 +2,6 @@
 uqtopus.envs - Gymnasium environments for OpenFOAM simulations.
 """
 
-from .openfoam_env import OpenFOAMEnv
+from .open_loop_env import OpenLoopEnv
 
-__all__ = ["OpenFOAMEnv"]
+__all__ = ["OpenLoopEnv"]

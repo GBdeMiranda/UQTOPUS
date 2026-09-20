@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Sequence
 
 import gymnasium as gym
 import numpy as np
@@ -102,44 +102,26 @@ class Rollout:
         return float(np.mean(outside))
 
     def _stack(self, name: str) -> np.ndarray:
-        if not self.episodes:
-            raise ValueError("the rollout holds no episodes")
         return np.concatenate([ds[name].values for ds in self.episodes], axis=0)
 
     def __repr__(self) -> str:
+        if not self.episodes:
+            return f"Rollout(episodes=0, failures={len(self.failures)})"
         return (
             f"Rollout(episodes={len(self.episodes)}, steps={self.n_steps}, "
-            f"failures={len(self.failures)}, "
-            f"mean_return={self.returns.mean():.4g})"
-            if self.episodes
-            else f"Rollout(episodes=0, failures={len(self.failures)})"
+            f"failures={len(self.failures)}, mean_return={self.returns.mean():.4g})"
         )
 
 
 class _SpacesOnlyEnv(gym.Env):
-    """
-    Environment that carries the spaces and nothing else.
-
-    Parameters:
-        observation_space (gym.spaces.Box): the observation space.
-        action_space (gym.spaces.Box): the action space.
-    """
-
-    metadata: dict = {"render_modes": []}
+    """The spaces stable-baselines3 asks for at construction, and nothing else."""
 
     def __init__(self, observation_space: gym.spaces.Box, action_space: gym.spaces.Box) -> None:
         self.observation_space = observation_space
         self.action_space = action_space
 
     def reset(self, *, seed=None, options=None):
-        super().reset(seed=seed)
         return np.zeros(self.observation_space.shape, dtype=np.float32), {}
-
-    def step(self, action):
-        raise NotImplementedError(
-            "this environment carries only the spaces; use "
-            "ClosedLoopRunner.collect() to produce episodes"
-        )
 
 
 class ClosedLoopRunner:
@@ -148,7 +130,7 @@ class ClosedLoopRunner:
 
     Parameters:
         simulator (OpenFOAMSimulator): supplies the case template, the solver
-            script and the output directory. Its run() is not used.
+            script and the output directory.
         spec (PolicySpec): the contract, rendered into the case and checked
             against what the solver wrote.
         reward_fn (callable): maps the trajectory, with any requested
@@ -181,16 +163,14 @@ class ClosedLoopRunner:
         self.function_objects = list(function_objects)
         self.run_fn = run_fn or self._run_locally
 
-    # gym vocabulary, for the parts of it that apply
-
     @property
-    def observation_space(self):
+    def observation_space(self) -> gym.spaces.Box:
         return gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.spec.obs_dim,), dtype=np.float32
         )
 
     @property
-    def action_space(self):
+    def action_space(self) -> gym.spaces.Box:
         return gym.spaces.Box(
             low=np.asarray(self.spec.action.low, dtype=np.float32),
             high=np.asarray(self.spec.action.high, dtype=np.float32),
@@ -199,14 +179,12 @@ class ClosedLoopRunner:
 
     def stub_env(self) -> gym.Env:
         """
-        Build a gymnasium.Env carrying only the observation and action spaces.
+        Build the gymnasium.Env that stable-baselines3 takes at construction.
 
         Returns:
-            gymnasium.Env: reset() returns a zero observation, step() raises.
+            gymnasium.Env: carries the two spaces; reset() gives a zero observation.
         """
         return _SpacesOnlyEnv(self.observation_space, self.action_space)
-
-    # collection
 
     def collect(
         self,
@@ -235,39 +213,20 @@ class ClosedLoopRunner:
         Returns:
             Rollout
         """
-        if artifact.spec.hash != self.spec.hash:
-            raise ValueError(
-                f"the policy implements contract {artifact.spec.hash} but the "
-                f"runner is configured for {self.spec.hash}"
-            )
-
-        iteration = iteration if iteration is not None else (artifact.iteration or 0)
-        if seeds is None:
-            seeds = [iteration * 100_000 + i for i in range(n_episodes)]
-        if len(seeds) != n_episodes:
-            raise ValueError(f"got {len(seeds)} seeds for {n_episodes} episodes")
-
+        iteration, values = self._seeds(artifact, n_episodes, seeds, iteration)
         policy_path = artifact.path.resolve()
-        indices = range(n_episodes)
-        values = [int(seed) for seed in seeds]
 
-        if n_jobs > 1:
-            with ThreadPoolExecutor(max_workers=n_jobs) as pool:
-                results = list(
-                    pool.map(
-                        self._run_episode,
-                        indices,
-                        values,
-                        repeat(policy_path),
-                        repeat(iteration),
-                        repeat(verbose),
-                    )
+        with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+            results = list(
+                pool.map(
+                    self._run_episode,
+                    range(n_episodes),
+                    values,
+                    repeat(policy_path),
+                    repeat(iteration),
+                    repeat(verbose),
                 )
-        else:
-            results = [
-                self._run_episode(index, seed, policy_path, iteration, verbose)
-                for index, seed in zip(indices, values)
-            ]
+            )
 
         rollout = Rollout(artifact=artifact)
         for episode, failure in results:
@@ -289,6 +248,33 @@ class ClosedLoopRunner:
                 + "; ".join(str(f) for f in rollout.failures)
             )
         return rollout
+
+    def _seeds(
+        self,
+        artifact: PolicyArtifact,
+        n_episodes: int,
+        seeds: Sequence[int] | None,
+        iteration: int | None,
+    ) -> tuple[int, list[int]]:
+        """
+        Check the policy against the contract and settle the episode seeds.
+
+        Returns:
+            tuple: the iteration, falling back to the artifact's, and one seed
+            per episode, derived from the iteration when seeds is None.
+        """
+        if artifact.spec.hash != self.spec.hash:
+            raise ValueError(
+                f"the policy implements contract {artifact.spec.hash} but the "
+                f"runner is configured for {self.spec.hash}"
+            )
+
+        iteration = iteration if iteration is not None else (artifact.iteration or 0)
+        if seeds is None:
+            seeds = [iteration * 100_000 + i for i in range(n_episodes)]
+        if len(seeds) != n_episodes:
+            raise ValueError(f"got {len(seeds)} seeds for {n_episodes} episodes")
+        return iteration, [int(seed) for seed in seeds]
 
     def _run_episode(
         self,

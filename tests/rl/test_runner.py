@@ -150,7 +150,7 @@ def test_spaces_come_from_the_spec_and_the_stub_env_refuses_to_step(coeff_runner
     assert obs.shape == (spec.obs_dim,)
     assert env.observation_space.shape == (spec.obs_dim,)
 
-    with pytest.raises(NotImplementedError, match="carries only the spaces"):
+    with pytest.raises(NotImplementedError):
         env.step(np.zeros(spec.act_dim, dtype=np.float32))
 
 
@@ -210,3 +210,5 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
     assert str(artifact.path.resolve()) in rendered
     assert rendered.count("{") == rendered.count("}")
     assert rollout.n_steps == steps
+
+

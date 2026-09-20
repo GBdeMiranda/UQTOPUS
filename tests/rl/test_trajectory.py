@@ -16,7 +16,6 @@ from uqtopus.rl import (
     attach,
     evaluate_reward,
     find_trajectory,
-    moving_average,
     read_function_object,
     read_trajectory,
     write_trajectory,
@@ -255,17 +254,6 @@ def test_attach_merges_onto_the_trajectory(spec, tmp_path):
 # ---------------------------------------------------------------------------
 # reward
 # ---------------------------------------------------------------------------
-
-def test_moving_average_is_causal_and_cancels_a_full_period():
-    values = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    assert np.allclose(moving_average(values, 1), values)
-    # leading steps average over what exists so far
-    assert np.allclose(moving_average(values, 3), [1.0, 1.5, 2.0, 3.0, 4.0])
-
-    t = np.arange(0, 100) * 0.1
-    signal = 2.0 + np.sin(2 * np.pi * t / 1.0)   # period 1.0 == 10 samples
-    assert np.allclose(moving_average(signal, 10)[20:], 2.0, atol=1e-2)
-
 
 def test_evaluate_reward_checks_the_shape(spec, tmp_path):
     n = 6

@@ -30,7 +30,6 @@ from .reward import (
     align_to_control,
     attach,
     evaluate_reward,
-    moving_average,
     read_function_object,
 )
 from .trajectory import (
@@ -67,7 +66,6 @@ __all__ = [
     "export_random_policy",
     "find_trajectory",
     "controller_params",
-    "moving_average",
     "normalized_observations",
     "read_function_object",
     "read_metadata",

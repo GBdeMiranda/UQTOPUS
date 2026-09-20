@@ -215,42 +215,7 @@ def attach(trajectory: xr.Dataset, *series: xr.Dataset, **named: xr.Dataset) -> 
     return merged
 
 
-# Utilities rewards tend to need
-
-def moving_average(
-    values: xr.DataArray | np.ndarray,
-    window: int,
-    *,
-    center: bool = False,
-) -> np.ndarray:
-    """
-    Trailing moving average, with the leading steps averaged over what exists.
-
-    Parameters:
-        values: the series to smooth.
-        window (int): number of samples in the window.
-        center (bool): center the window instead of trailing it. Only valid
-            offline; a reward used during training must stay causal.
-    """
-    array = np.asarray(
-        values.values if isinstance(values, xr.DataArray) else values, dtype=np.float64
-    ).ravel()
-    if window < 1:
-        raise ValueError("window must be >= 1")
-    if window == 1:
-        return array.copy()
-
-    cumulative = np.concatenate(([0.0], np.cumsum(array)))
-    out = np.empty_like(array)
-    for i in range(array.size):
-        if center:
-            a = max(0, i - window // 2)
-            b = min(array.size, a + window)
-        else:
-            a, b = max(0, i - window + 1), i + 1
-        out[i] = (cumulative[b] - cumulative[a]) / (b - a)
-    return out
-
+# Running the user's reward over a trajectory
 
 def evaluate_reward(trajectory: xr.Dataset, reward_fn: RewardFn) -> np.ndarray:
     """
