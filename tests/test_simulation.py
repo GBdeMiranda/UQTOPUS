@@ -5,6 +5,7 @@ Tests for the OpenFOAM case runner and the parallel UQ ensemble.
 from __future__ import annotations
 
 import importlib
+import os
 import inspect
 import shutil
 from pathlib import Path
@@ -14,9 +15,11 @@ import pytest
 import yaml
 
 from uqtopus.exceptions import SolverDivergedError
+from uqtopus.policy_build import find_openfoam
 from uqtopus.sampler import generate_samples
 from uqtopus.simulation import (
     _run_ensemble,
+    _solver_environment,
     run_simulation,
     run_uq_study,
     uq_simulation,
@@ -71,6 +74,10 @@ def exp_config(template, tmp_path) -> dict:
 def solved_dt(case_dir: Path) -> float:
     """The value the solver read back out of the rendered case."""
     return float((case_dir / "1" / "T").read_text())
+
+
+def _raise_no_openfoam(*args):
+    raise RuntimeError("no OpenFOAM installation found")
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +154,40 @@ def test_run_simulation_overwrites_an_existing_case(exp_config, tmp_path):
 
     assert solved_dt(tmp_path / "run") == 0.07
     assert not stale.exists(), "rsync --delete should clear the previous run"
+
+
+def test_solver_environment_is_inherited_under_a_sourced_openfoam(monkeypatch):
+    monkeypatch.setenv("WM_PROJECT_DIR", "/opt/openfoam9")
+
+    assert _solver_environment() is None
+
+
+def test_solver_environment_comes_from_the_installation_when_the_shell_lacks_it(monkeypatch):
+    try:
+        find_openfoam()
+    except RuntimeError:
+        pytest.skip("no OpenFOAM installation on this machine")
+    monkeypatch.delenv("WM_PROJECT_DIR", raising=False)
+
+    environment = _solver_environment()
+
+    assert environment["WM_PROJECT_DIR"]
+    assert environment["PATH"] != os.environ["PATH"], "the solver should see OpenFOAM's PATH"
+
+
+def test_solver_environment_is_inherited_with_no_openfoam_installed(monkeypatch):
+    monkeypatch.delenv("WM_PROJECT_DIR", raising=False)
+    monkeypatch.setattr("uqtopus.simulation.find_openfoam", _raise_no_openfoam)
+
+    assert _solver_environment() is None
+
+
+def test_run_simulation_runs_with_no_openfoam_in_the_environment(exp_config, tmp_path, monkeypatch):
+    monkeypatch.delenv("WM_PROJECT_DIR", raising=False)
+
+    run_simulation({DT_KEY: 0.05}, exp_config)
+
+    assert solved_dt(tmp_path / "run") == 0.05
 
 
 # ---------------------------------------------------------------------------

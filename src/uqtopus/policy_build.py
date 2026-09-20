@@ -14,6 +14,7 @@ import tarfile
 import tempfile
 import urllib.request
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 DEFAULT_ONNX_VERSION = "1.17.3"
@@ -126,6 +127,25 @@ def probe_openfoam(bashrc: Path) -> FoamEnv:
         user_dir=Path(lines[2].strip()),
         user_libbin=Path(lines[3].strip()),
     )
+
+
+@lru_cache(maxsize=None)
+def foam_environment(bashrc: Path) -> dict[str, str]:
+    """
+    Full environment of a sourced OpenFOAM installation.
+
+    Parameters:
+        bashrc (Path): the etc/bashrc to source.
+
+    Returns:
+        dict[str, str]: every variable the shell holds after sourcing it.
+    """
+    script = f'. "{bashrc}" >/dev/null 2>&1 || exit 1; env -0'
+    done = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"sourcing {bashrc} did not produce an OpenFOAM environment")
+    entries = (item.split("=", 1) for item in done.stdout.split("\0") if "=" in item)
+    return dict(entries)
 
 
 def find_onnxruntime(explicit: str | os.PathLike | None = None) -> Path | None:

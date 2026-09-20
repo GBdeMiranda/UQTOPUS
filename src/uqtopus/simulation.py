@@ -22,6 +22,7 @@ from tqdm import tqdm
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 # Internal package imports
+from .policy_build import find_openfoam, foam_environment
 from .utils import load_config, parse_openfoam_case
 from .sampler import generate_samples
 from .exceptions import SolverDivergedError
@@ -29,6 +30,24 @@ from .exceptions import SolverDivergedError
 logger = logging.getLogger(__name__)
 
 _DESTINATION_FOLDER = Path('experiments/temp')   # Default destination folder for experiments
+
+
+def _solver_environment() -> dict[str, str] | None:
+    """
+    Environment to run a case's solver script in.
+
+    Returns:
+        dict or None: the variables of an OpenFOAM installation found on the
+            machine, or None to inherit the environment of this process.
+    """
+    if os.environ.get("WM_PROJECT_DIR"):
+        return None
+    try:
+        bashrc = find_openfoam()
+    except RuntimeError:
+        return None
+    logger.debug("running the solver under the OpenFOAM at %s", bashrc)
+    return foam_environment(bashrc)
 
 
 def run_simulation(params: dict[str, float], exp_config: dict[str, Any], verbose: bool = False) -> None:
@@ -124,6 +143,7 @@ def run_simulation(params: dict[str, float], exp_config: dict[str, Any], verbose
         result = subprocess.run(
             [f"./{solver_script}"],
             cwd=str(output_path),
+            env=_solver_environment(),
             check=True,
             capture_output=True,
             text=True
