@@ -48,14 +48,6 @@ Foam::onnxPolicy::onnxPolicy(const fileName& path, const label seed)
     specHash_ = word(entry("uqtopus.spec_hash"));
     obsDim_ = readLabel(IStringStream(entry("uqtopus.obs_dim"))());
     actDim_ = readLabel(IStringStream(entry("uqtopus.act_dim"))());
-
-    if (word(entry("uqtopus.distribution")) != "gaussian")
-    {
-        FatalErrorInFunction
-            << path_ << " was exported for a " << entry("uqtopus.distribution")
-            << " action, and only gaussian takes a normal draw"
-            << abort(FatalError);
-    }
 }
 
 

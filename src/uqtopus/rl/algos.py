@@ -7,19 +7,56 @@ launches the solvers, reads the trajectories back and fills the buffer.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import stable_baselines3 as sb3
+import torch
 
 from .buffer import build_rollout_buffer, rollout_statistics
 from .export import PolicyArtifact, RunningStatistics, export_policy
 from .runner import ClosedLoopRunner, Rollout
+from .spec import PolicySpec
 from .validate import validate_policy
 
-logger = logging.getLogger(__name__)
+
+class _SB3Actor(torch.nn.Module):
+    """
+    The actor half of a stable-baselines3 ActorCriticPolicy, returning
+    (mean, log_std).
+
+    Parameters:
+        policy: the ActorCriticPolicy to read.
+    """
+
+    def __init__(self, policy: Any) -> None:
+        super().__init__()
+        self.policy = policy
+
+    def forward(self, x):
+        features = self.policy.pi_features_extractor(x)
+        latent_pi = self.policy.mlp_extractor.forward_actor(features)
+        mean = self.policy.action_net(latent_pi)
+        return mean, self.policy.log_std.expand_as(mean)
+
+
+class _SpacesOnlyEnv(gym.Env):
+    """The spaces stable-baselines3 asks for at construction, and nothing else."""
+
+    def __init__(self, spec: PolicySpec) -> None:
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(spec.obs_dim,), dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=np.asarray(spec.action.low, dtype=np.float32),
+            high=np.asarray(spec.action.high, dtype=np.float32),
+            dtype=np.float32,
+        )
+
+    def reset(self, *, seed=None, options=None):
+        return np.zeros(self.observation_space.shape, dtype=np.float32), {}
 
 
 class PPO(sb3.PPO):
@@ -28,17 +65,12 @@ class PPO(sb3.PPO):
 
     Parameters:
         policy: as in stable-baselines3, e.g. 'MlpPolicy'.
-        runner (ClosedLoopRunner): produces the episodes and supplies the
-            spaces. Its spec must declare a Gaussian policy.
+        runner (ClosedLoopRunner): produces the episodes.
         n_episodes (int): solver runs per training iteration, sharing one frozen
             policy.
         n_jobs (int): how many of those run at once.
-        export_dir (str or Path): where the per-iteration .onnx files and
-            manifests are written.
-        normalize_observations (bool): bake each iteration's observation
-            statistics into that iteration's graph.
-        validate (bool): check every exported policy against the contract before
-            it reaches a solver.
+        export_dir (str or Path): where the per-iteration .onnx files are
+            written.
         **kwargs: passed to stable-baselines3. Device defaults to 'cpu'.
     """
 
@@ -50,17 +82,8 @@ class PPO(sb3.PPO):
         n_episodes: int = 4,
         n_jobs: int = 1,
         export_dir: str | Path = "policies",
-        normalize_observations: bool = True,
-        validate: bool = True,
         **kwargs: Any,
     ) -> None:
-        if runner.spec.action.distribution != "gaussian":
-            raise ValueError(
-                "A stable-baselines3 actor emits a diagonal Gaussian, but the "
-                f"spec declares distribution={runner.spec.action.distribution!r}. "
-                "Use distribution='gaussian' with this class."
-            )
-
         # n_steps is a placeholder; the buffer is rebuilt every iteration to fit
         # the episodes collected. Equal to batch_size to keep the base class's
         # divisibility warning quiet.
@@ -68,21 +91,15 @@ class PPO(sb3.PPO):
         kwargs.setdefault("n_steps", kwargs["batch_size"])
         kwargs.setdefault("device", "cpu")
 
-        super().__init__(policy, runner.stub_env(), **kwargs)
+        super().__init__(policy, _SpacesOnlyEnv(runner.spec), **kwargs)
 
         self.runner = runner
-        self.spec = runner.spec
         self.n_episodes = n_episodes
         self.n_jobs = n_jobs
         self.export_dir = Path(export_dir)
-        self.validate = validate
-
-        self.statistics = (
-            RunningStatistics(self.spec.obs_dim) if normalize_observations else None
-        )
+        self.statistics = RunningStatistics(runner.spec.obs_dim)
         self.artifacts: list[PolicyArtifact] = []
         self.rollouts: list[Rollout] = []
-        self._uqtopus_iteration = 0
 
     def collect_rollouts(self, env, callback, rollout_buffer, n_rollout_steps) -> bool:
         """
@@ -91,8 +108,9 @@ class PPO(sb3.PPO):
         """
         callback.on_rollout_start()
 
-        iteration = self._uqtopus_iteration
-        artifact = self._export(iteration)
+        iteration = len(self.artifacts)
+        artifact = self.export_current_policy(self.export_dir / f"policy_iter{iteration:04d}.onnx")
+        validate_policy(artifact, self.runner.spec)
         self.artifacts.append(artifact)
 
         rollout = self.runner.collect(
@@ -112,52 +130,25 @@ class PPO(sb3.PPO):
 
         # The statistics advance only after the buffer is filled from this
         # iteration's snapshot.
-        if self.statistics is not None:
-            self.statistics.update(rollout.observations)
+        self.statistics.update(rollout.observations)
 
         self.num_timesteps += rollout.n_steps
         for key, value in rollout_statistics(rollout).items():
             self.logger.record(key, value)
-        self.logger.record("rollout/policy", str(artifact.path.name))
-
-        self._uqtopus_iteration += 1
+        self.logger.record("rollout/policy", artifact.path.name)
 
         callback.update_locals(locals())
         callback.on_rollout_end()
-        return not callback.on_step() is False
-
-    # helpers
-
-    def _export(self, iteration: int) -> PolicyArtifact:
-        normalization = (
-            self.statistics.snapshot() if self.statistics is not None else None
-        )
-        artifact = export_policy(
-            self.policy,
-            self.spec,
-            self.export_dir / f"policy_iter{iteration:04d}.onnx",
-            normalization=normalization,
-            iteration=iteration,
-            backend="sb3",
-        )
-        if self.validate:
-            validate_policy(artifact, self.spec, strict=True)
-        return artifact
+        return callback.on_step()
 
     def export_current_policy(self, path: str | Path) -> PolicyArtifact:
-        """
-        Export the policy and the current statistics as they stand.
-        """
-        normalization = (
-            self.statistics.snapshot() if self.statistics is not None else None
-        )
+        """Export the policy with the observation statistics as they stand."""
         return export_policy(
-            self.policy,
-            self.spec,
+            _SB3Actor(self.policy),
+            self.runner.spec,
             path,
-            normalization=normalization,
-            iteration=self._uqtopus_iteration,
-            backend="sb3",
+            normalization=self.statistics.snapshot(),
+            iteration=len(self.artifacts),
         )
 
     @property

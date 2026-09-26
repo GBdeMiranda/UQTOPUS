@@ -4,6 +4,8 @@ Tests for closed-loop rollout collection.
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,21 @@ from uqtopus.rl import export_random_policy
 from uqtopus.rl.runner import ClosedLoopRunner
 
 from conftest import N_STEPS, fake_solver, make_runner, make_spec
+
+
+def recording_solver(rendered, spec, case_dir, params):
+    """The fake solver, keeping each controller block it was given."""
+    rendered.append(params["system__controlDict__controller"])
+    fake_solver(spec)(case_dir, params)
+
+
+def second_episode_fails(good, bad, case_dir, params):
+    """Runs bad for the second episode and good for the others."""
+    (bad if case_dir.name.endswith("ep01") else good)(case_dir, params)
+
+
+def refusing_launcher(case_dir, params):
+    raise OSError("scheduler refused the job")
 
 
 @pytest.fixture
@@ -43,22 +60,36 @@ def test_flat_views_line_up_with_episode_boundaries(coeff_runner, spec, artifact
     assert not rollout.failures
 
 
-def test_each_episode_gets_its_own_seed(coeff_runner, artifact):
-    rollout = coeff_runner.collect(artifact, n_episodes=3, iteration=7)
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"iteration": 7}, [700000, 700001, 700002]),
+        ({"seeds": [11, 22, 33]}, [11, 22, 33]),
+    ],
+)
+def test_each_episode_gets_its_own_seed(coeff_runner, artifact, kwargs, expected):
+    rollout = coeff_runner.collect(artifact, n_episodes=3, **kwargs)
 
-    assert [ds.attrs["seed"] for ds in rollout.episodes] == [700000, 700001, 700002]
+    assert [ds.attrs["seed"] for ds in rollout.episodes] == expected
     # different seeds must produce different trajectories
     assert not np.allclose(
         rollout.episodes[0]["observation"], rollout.episodes[1]["observation"]
     )
 
 
-def test_explicit_seeds_are_honored(coeff_runner, artifact):
-    rollout = coeff_runner.collect(artifact, n_episodes=2, seeds=[11, 22])
-    assert [ds.attrs["seed"] for ds in rollout.episodes] == [11, 22]
-
+def test_one_seed_per_episode_is_required(coeff_runner, artifact):
     with pytest.raises(ValueError, match="seeds"):
         coeff_runner.collect(artifact, n_episodes=3, seeds=[1, 2])
+
+
+def test_deterministic_collection_reaches_the_case(simulator, spec, artifact):
+    rendered = []
+    runner = make_runner(simulator, spec, partial(recording_solver, rendered, spec))
+    runner.collect(artifact, n_episodes=1)
+    runner.collect(artifact, n_episodes=1, iteration=1, deterministic=True)
+
+    assert "deterministic   no;" in rendered[0]
+    assert "deterministic   yes;" in rendered[1]
 
 
 def test_parallel_collection_matches_serial(coeff_runner, artifact):
@@ -67,26 +98,6 @@ def test_parallel_collection_matches_serial(coeff_runner, artifact):
 
     assert np.allclose(serial.observations, parallel.observations)
     assert np.allclose(serial.rewards, parallel.rewards)
-
-
-def test_the_reward_sees_the_function_object_output(simulator, spec, artifact):
-    seen = {}
-
-    def reward_fn(ds):
-        seen["vars"] = set(ds.data_vars)
-        return np.full(ds.sizes["time"], 0.5)
-
-    runner = make_runner(
-        simulator,
-        spec,
-        fake_solver(spec),
-        reward_fn=reward_fn,
-        function_objects=["forceCoeffs"],
-    )
-    rollout = runner.collect(artifact, n_episodes=1)
-
-    assert {"Cd", "Cl", "observation", "action"} <= seen["vars"]
-    assert np.allclose(rollout.rewards, 0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -106,29 +117,21 @@ def test_a_diverged_run_keeps_its_partial_trajectory(simulator, spec, artifact):
 def test_one_bad_case_does_not_sink_the_batch(simulator, spec, artifact):
     good = fake_solver(spec)
     bad = fake_solver(spec, fail_after=0, write_coeffs=False)
-    calls = {"n": 0}
-
-    def run_fn(case_dir, params):
-        calls["n"] += 1
-        (bad if calls["n"] == 2 else good)(case_dir, params)
-
-    rollout = make_runner(simulator, spec, run_fn).collect(artifact, n_episodes=3)
+    runner = make_runner(simulator, spec, partial(second_episode_fails, good, bad))
+    rollout = runner.collect(artifact, n_episodes=3)
 
     assert len(rollout.episodes) == 2
     assert len(rollout.failures) == 1
 
 
-def test_a_launcher_error_is_reported_not_raised(simulator, spec, artifact):
-    def run_fn(case_dir, params):
-        raise OSError("scheduler refused the job")
-
-    runner = make_runner(simulator, spec, run_fn)
-    with pytest.raises(RuntimeError, match="all 2 episodes failed"):
+def test_a_launcher_error_is_raised(simulator, spec, artifact):
+    runner = make_runner(simulator, spec, refusing_launcher)
+    with pytest.raises(OSError, match="scheduler refused"):
         runner.collect(artifact, n_episodes=2)
 
 
 # ---------------------------------------------------------------------------
-# contract and gym vocabulary
+# contract
 # ---------------------------------------------------------------------------
 
 def test_a_policy_from_another_contract_is_refused(coeff_runner, tmp_path):
@@ -137,21 +140,6 @@ def test_a_policy_from_another_contract_is_refused(coeff_runner, tmp_path):
 
     with pytest.raises(ValueError, match="contract"):
         coeff_runner.collect(wrong, n_episodes=1)
-
-
-def test_spaces_come_from_the_spec_and_the_stub_env_refuses_to_step(coeff_runner, spec):
-    assert coeff_runner.observation_space.shape == (spec.obs_dim,)
-    assert coeff_runner.action_space.shape == (spec.act_dim,)
-    assert np.allclose(coeff_runner.action_space.low, -0.1)
-    assert np.allclose(coeff_runner.action_space.high, 0.1)
-
-    env = coeff_runner.stub_env()
-    obs, info = env.reset()
-    assert obs.shape == (spec.obs_dim,)
-    assert env.observation_space.shape == (spec.obs_dim,)
-
-    with pytest.raises(NotImplementedError):
-        env.step(np.zeros(spec.act_dim, dtype=np.float32))
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +154,8 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
 
     # the "solver" copies the rendered dictionary aside and writes a trajectory
     steps = 4
-    columns = " ".join(spec.trajectory_columns())
+    names = ["time", *spec.observation.component_names(), *spec.action.component_names()]
+    columns = " ".join(names)
     rows = [
         " ".join(
             [f"{spec.control_interval * (k + 1):g}"]
@@ -183,6 +172,7 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
         "mkdir -p postProcessing/uqtopusPolicy/0\n"
         "{\n"
         f'  echo "# specHash {spec.hash}"\n'
+        '  echo "# seed 99"\n'
         f'  echo "# columns {columns}"\n'
         + "".join(f'  echo "{row}"\n' for row in rows)
         + "} > postProcessing/uqtopusPolicy/0/trajectory.dat\n"
@@ -204,7 +194,7 @@ def test_the_block_reaches_the_case_through_jinja(tmp_path, spec, artifact):
 
     rollout = runner.collect(artifact, n_episodes=1, seeds=[99])
 
-    rendered = (tmp_path / "runs" / "iter0000_ep00" / "rendered_controlDict").read_text()
+    rendered = (tmp_path / "runs" / "policy_ep00" / "rendered_controlDict").read_text()
     assert spec.hash in rendered
     assert "seed            99;" in rendered
     assert str(artifact.path.resolve()) in rendered

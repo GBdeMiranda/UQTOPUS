@@ -23,6 +23,7 @@ def test_the_cpp_sources_ship_with_the_package():
         "uqtopusBoundaryConditionFvPatchField.C",
         "uqtopusBoundaryConditionFvPatchFields.C",
         "uqtopusController.C",
+        "uqtopusPolicyFunction1.C",
         "uqtopusSource.C",
     ]
 
@@ -33,20 +34,19 @@ def test_make_files_names_the_library_the_cases_load():
     assert "libuqtopusPolicy" in text
 
 
-def test_an_incomplete_onnxruntime_is_not_accepted(tmp_path):
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "onnxruntime_cxx_api.h").touch()
+@pytest.mark.parametrize(
+    "files, found",
+    [
+        (["include/onnxruntime_cxx_api.h"], False),
+        (["include/onnxruntime_cxx_api.h", "lib/libonnxruntime.so"], True),
+    ],
+)
+def test_onnxruntime_needs_the_header_and_the_library(tmp_path, files, found):
+    for name in files:
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).touch()
 
-    assert policy_build.find_onnxruntime(tmp_path) is None
-
-
-def test_a_complete_onnxruntime_is_accepted(tmp_path):
-    (tmp_path / "include").mkdir()
-    (tmp_path / "include" / "onnxruntime_cxx_api.h").touch()
-    (tmp_path / "lib").mkdir()
-    (tmp_path / "lib" / "libonnxruntime.so").touch()
-
-    assert policy_build.find_onnxruntime(tmp_path) == tmp_path
+    assert (policy_build.find_onnxruntime(tmp_path) == tmp_path) is found
 
 
 def test_a_missing_openfoam_is_reported(tmp_path):

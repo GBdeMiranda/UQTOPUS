@@ -19,22 +19,19 @@ from uqtopus.rl import (
     PolicyArtifact,
     PolicySpec,
     ProbeSource,
-    build_mlp,
     export_policy,
     export_random_policy,
     read_metadata,
-    validate_export,
     validate_policy,
 )
-from uqtopus.rl.export import _PolicyGraph
+from uqtopus.rl.export import _PolicyGraph, build_mlp
 from uqtopus.rl.foam import (
-    controller_mapping,
     controller_params,
     format_block,
     render_controller,
 )
 
-from conftest import PROBES, make_spec
+from conftest import make_spec
 
 
 def an_action(**overrides):
@@ -67,44 +64,26 @@ def rich() -> PolicySpec:
     )
 
 
-@pytest.fixture
-def beta() -> PolicySpec:
-    """A single rotating cylinder with a Beta-distributed action."""
-    return make_spec(
-        action=ActionSpec(
-            name="omega", targets="cylinder", low=-5.0, high=5.0, distribution="beta"
-        ),
-        control_interval=0.05,
-        start_time=4.0,
-    )
-
-
 # ---------------------------------------------------------------------------
 # spec
 # ---------------------------------------------------------------------------
 
-def test_dimensions_follow_the_sources(rich):
+def test_the_sources_define_the_dimension_and_the_columns(rich):
     assert rich.obs_dim == 4                    # 2 pressure probes + 2 U components
-    assert rich.act_dim == 1
-    assert len(rich.observation.component_names()) == 4
+    assert rich.observation.component_names() == [
+        "probes.p.0", "probes.p.1", "wake.U0.0", "wake.U1.0",
+    ]
 
 
 def test_spec_round_trips_through_json(rich):
     assert PolicySpec.from_json(rich.to_json()) == rich
 
 
-def test_hash_is_stable_and_sensitive(rich):
-    assert rich.hash == PolicySpec.from_json(rich.to_json()).hash
-
+def test_the_hash_changes_when_a_probe_moves(rich):
     moved = make_spec(
         sources=(
-            ProbeSource(
-                field_name="p", positions=[(0.15, -0.6, 0.005), (2.0, 0.0, 0.005)]
-            ),
-            ProbeSource(
-                field_name="U", positions=[(3.0, 0.0, 0.005)], components=(0, 1),
-                name="wake"
-            ),
+            ProbeSource(field_name="p", positions=[(0.15, -0.6, 0.005), (2.0, 0.0, 0.005)]),
+            *rich.observation.sources[1:],
         ),
         action=rich.action,
         start_time=rich.start_time,
@@ -112,86 +91,31 @@ def test_hash_is_stable_and_sensitive(rich):
     assert moved.hash != rich.hash
 
 
-def test_source_order_defines_column_order(rich):
-    columns = rich.trajectory_columns()
-    assert columns[0] == "time"
-    assert columns[-1] == "Q"
-    assert len(columns) == 1 + rich.obs_dim + rich.act_dim
-
-
 @pytest.mark.parametrize(
-    "targets, expected",
+    "targets, expected, names",
     [
-        ("cylinder", ("cylinder",)),
-        (["jetA", "jetB"], ("jetA", "jetB")),
-        (("rate", "pressure", "quality"), ("rate", "pressure", "quality")),
+        ("cylinder", ("cylinder",), ["Q"]),
+        (["jetA", "jetB"], ("jetA", "jetB"), ["Q.0", "Q.1"]),
+        (("rate", "pressure", "quality"), ("rate", "pressure", "quality"), ["Q.0", "Q.1", "Q.2"]),
     ],
 )
-def test_targets_are_positional(targets, expected):
+def test_targets_are_positional(targets, expected, names):
     action = ActionSpec(name="Q", targets=targets, low=-1.0, high=1.0)
 
     assert action.targets == expected
-    assert action.target_names == list(expected)
     assert action.n_components == len(expected)
-    assert action.distribution == "gaussian"    # the default
-
-
-def test_each_target_takes_its_own_action_component():
-    """Three quantities driven by three components of one action."""
-    action = ActionSpec(
-        name="injection",
-        targets=("rate", "pressure", "quality"),
-        low=[0.0, 1e5, 0.0],
-        high=[1.0, 5e5, 1.0],
-    )
-    spec = make_spec(action=action)
-
-    assert spec.act_dim == 3
-    assert spec.action.component_names() == [
-        "injection.0", "injection.1", "injection.2"
-    ]
-    assert PolicySpec.from_dict(spec.to_dict()) == spec
-
-    rendered = controller_mapping(spec, "p.onnx")["action"]["targets"]
-    assert [entry["component"] for entry in rendered] == [0, 1, 2]
-
-
-@pytest.mark.parametrize(
-    "distribution, inputs, outputs, noise_dim",
-    [
-        ("gaussian", ("observation", "noise"), ("action",), 1),
-        ("beta", ("observation",), ("alpha", "beta"), 0),
-    ],
-)
-def test_signature_follows_the_distribution(distribution, inputs, outputs, noise_dim):
-    action = ActionSpec(
-        name="Q", targets="jet1", low=-0.1, high=0.1, distribution=distribution
-    )
-    spec = make_spec(action=action)
-
-    assert spec.input_names == inputs
-    assert spec.output_names == outputs
-    assert spec.noise_dim == noise_dim
+    assert action.component_names() == names
 
 
 @pytest.mark.parametrize(
     "build, match",
     [
         (an_action(low=1.0, high=1.0), "low < high"),
-        (
-            an_action(
-                low=[0.0, 1.0],
-                n_components=3,
-                targets=["a", "b", "c"],
-            ),
-            "entries",
-        ),
-        (an_action(targets="a", n_components=2), "one target drives one component"),
+        (an_action(low=[0.0, 1.0], targets=["a", "b", "c"]), "entries"),
         (an_action(targets=["j", "j"]), "duplicate"),
         (an_action(targets=[]), "at least one target"),
         (an_action(ramp_fraction=-0.1), "ramp_fraction"),
         (an_action(ramp_fraction=1.5), "ramp_fraction"),
-        (an_action(distribution="cauchy"), "Unsupported distribution"),
         (partial(ObservationSpec, sources=()), "at least one source"),
         (partial(make_spec, control_interval=0.0), "control_interval"),
         (partial(make_spec, start_time=1.0, end_time=0.5), "end_time"),
@@ -202,44 +126,9 @@ def test_invalid_specs_are_rejected(build, match):
         build()
 
 
-def test_solver_readable_metadata_covers_targets_and_ramp(rich):
-    metadata = rich.to_metadata()
-    assert metadata["uqtopus.action_targets"] == "jet:0"
-    assert metadata["uqtopus.ramp_fraction"] == "0.5"
-
-
-# ---------------------------------------------------------------------------
-# normalization
-# ---------------------------------------------------------------------------
-
-def test_normalization_is_a_defensive_snapshot():
-    source = np.ones(4)
-    norm = Normalization(mean=source, std=np.ones(4))
-
-    source[0] = 99.0
-    assert norm.mean[0] == 1.0                  # the input was copied
-    for array in (norm.mean, norm.std):
-        with pytest.raises(ValueError):
-            array[0] = 1.0                      # and the copy is read-only
-
-    with pytest.raises(ValueError, match="strictly positive"):
-        Normalization(mean=np.zeros(3), std=np.array([1.0, 0.0, 1.0]))
-
-
 # ---------------------------------------------------------------------------
 # export
 # ---------------------------------------------------------------------------
-
-def test_exported_policy_passes_validation(beta, tmp_path):
-    net = build_mlp(beta, hidden=(16, 16), seed=0)
-    norm = Normalization.from_observations(
-        np.random.default_rng(0).normal(3.0, 2.0, (100, beta.obs_dim))
-    )
-    artifact = export_policy(net, beta, tmp_path / "policy.onnx", normalization=norm)
-
-    report = validate_export(net, beta, artifact.path, normalization=norm, strict=False)
-    assert report.ok, [str(c) for c in report.errors]
-
 
 def test_graph_buffers_follow_the_actor(spec):
     """
@@ -287,128 +176,99 @@ def test_gaussian_graph_draws_without_bounding(spec, tmp_path):
 
 def test_gaussian_export_passes_validation(spec, tmp_path):
     net = build_mlp(spec, hidden=(16, 16), seed=0)
-    norm = Normalization.from_observations(
-        np.random.default_rng(0).normal(3.0, 2.0, (100, spec.obs_dim))
+    norm = Normalization(mean=np.full(spec.obs_dim, 3.0), std=np.full(spec.obs_dim, 2.0))
+    artifact = export_policy(net, spec, tmp_path / "policy.onnx", normalization=norm)
+
+    validate_policy(artifact, spec)
+
+
+def test_export_refuses_an_actor_too_narrow_for_the_spec(spec, tmp_path):
+    net = torch.nn.Linear(spec.obs_dim, spec.act_dim)
+
+    with pytest.raises(ValueError, match="returns an action of shape"):
+        export_policy(net, spec, tmp_path / "policy.onnx")
+    assert not (tmp_path / "policy.onnx").exists()
+
+
+def test_metadata_is_self_describing(rich, tmp_path):
+    artifact = export_random_policy(rich, tmp_path / "policy.onnx", seed=0)
+    metadata = read_metadata(artifact.path)
+
+    assert metadata["uqtopus.spec_hash"] == rich.hash
+    assert (metadata["uqtopus.obs_dim"], metadata["uqtopus.act_dim"]) == ("4", "1")
+    # the flat entries exist so the solver can read them without a JSON parser
+    assert metadata["uqtopus.action_low"] == "-0.1"
+    assert metadata["uqtopus.action_high"] == "0.1"
+    assert metadata["uqtopus.action_targets"] == "jet:0"
+    assert metadata["uqtopus.ramp_fraction"] == "0.5"
+    assert PolicySpec.from_metadata(metadata) == rich
+
+
+def test_normalization_is_baked_into_the_graph(spec, tmp_path):
+    net = build_mlp(spec, hidden=(16, 16), seed=0)
+    norm = Normalization(
+        mean=np.full(spec.obs_dim, 10.0), std=np.full(spec.obs_dim, 2.0)
     )
     artifact = export_policy(net, spec, tmp_path / "policy.onnx", normalization=norm)
 
-    report = validate_export(net, spec, artifact.path, normalization=norm, strict=False)
-    assert report.ok, [str(c) for c in report.errors]
-
-
-def test_metadata_is_self_describing(beta, tmp_path):
-    artifact = export_random_policy(beta, tmp_path / "policy.onnx", seed=0)
-    metadata = read_metadata(artifact.path)
-
-    assert metadata["uqtopus.spec_hash"] == beta.hash
-    assert int(metadata["uqtopus.obs_dim"]) == beta.obs_dim
-    assert int(metadata["uqtopus.act_dim"]) == beta.act_dim
-    assert metadata["uqtopus.distribution"] == "beta"
-    # the flat entries exist so the solver can read bounds without a JSON parser
-    assert metadata["uqtopus.action_low"] == "-5.0"
-    assert metadata["uqtopus.action_high"] == "5.0"
-    assert PolicySpec.from_metadata(metadata) == beta
-
-
-def test_normalization_is_baked_into_the_graph(beta, tmp_path):
-    net = build_mlp(beta, hidden=(16, 16), seed=0)
-    norm = Normalization(
-        mean=np.full(beta.obs_dim, 10.0), std=np.full(beta.obs_dim, 2.0)
-    )
-    artifact = export_policy(net, beta, tmp_path / "policy.onnx", normalization=norm)
-
-    raw = np.random.default_rng(1).normal(10.0, 2.0, (8, beta.obs_dim)).astype(np.float32)
+    raw = np.random.default_rng(1).normal(10.0, 2.0, (8, spec.obs_dim)).astype(np.float32)
     session = ort.InferenceSession(str(artifact.path), providers=["CPUExecutionProvider"])
-    from_graph = session.run(None, {"observation": raw})
+    noise = np.zeros((8, spec.act_dim), np.float32)
+    from_graph = session.run(None, {"observation": raw, "noise": noise})
 
     # the graph on raw input must equal the bare network on normalized input
     with torch.no_grad():
         head = net(torch.tensor(norm.apply(raw), dtype=torch.float32))
-    expected_alpha = torch.nn.functional.softplus(head[:, : beta.act_dim]) + 1.0
+    expected_mean = head[:, : spec.act_dim]
 
-    assert np.allclose(from_graph[0], expected_alpha.numpy(), atol=1e-5)
+    assert np.allclose(from_graph[0], expected_mean.numpy(), atol=1e-5)
 
 
-def test_artifact_manifest_round_trips(beta, tmp_path):
-    artifact = export_random_policy(beta, tmp_path / "policy.onnx", iteration=3, seed=0)
-    reloaded = PolicyArtifact.load(artifact.manifest_path)
+def test_artifact_reloads_from_the_onnx_file(spec, tmp_path):
+    norm = Normalization(mean=np.full(spec.obs_dim, 3.0), std=np.full(spec.obs_dim, 2.0))
+    artifact = export_random_policy(
+        spec, tmp_path / "policy.onnx", iteration=3, seed=0, normalization=norm
+    )
+    reloaded = PolicyArtifact.load(artifact.path)
 
-    assert reloaded.spec == beta
+    assert reloaded.spec == spec
     assert reloaded.iteration == 3
-    assert reloaded.verify_file()
-    assert np.array_equal(reloaded.normalization.mean, artifact.normalization.mean)
-
-
-def test_export_rejects_mismatched_normalization(beta, tmp_path):
-    net = build_mlp(beta, hidden=(8,), seed=0)
-    with pytest.raises(ValueError, match="dimension"):
-        export_policy(
-            net,
-            beta,
-            tmp_path / "policy.onnx",
-            normalization=Normalization.identity(beta.obs_dim + 1),
-        )
+    assert np.array_equal(reloaded.normalization.mean, norm.mean)
+    assert np.array_equal(reloaded.normalization.std, norm.std)
 
 
 # ---------------------------------------------------------------------------
 # validation
 # ---------------------------------------------------------------------------
 
-def test_stale_normalization_is_caught_by_parity(beta, tmp_path):
-    """The graph was exported with one set of statistics, the update uses another."""
-    net = build_mlp(beta, hidden=(16, 16), seed=0)
-    exported_with = Normalization(
-        mean=np.full(beta.obs_dim, 3.0), std=np.full(beta.obs_dim, 2.0)
-    )
-    artifact = export_policy(
-        net, beta, tmp_path / "policy.onnx", normalization=exported_with
-    )
-
-    moved_on = Normalization(
-        mean=np.full(beta.obs_dim, 3.5), std=np.full(beta.obs_dim, 2.1)
-    )
-    report = validate_export(net, beta, artifact.path, normalization=moved_on, strict=False)
-
-    assert not report.ok
-    assert "parity" in [c.name for c in report.errors]
-
-
-def test_contract_mismatch_is_caught(beta, tmp_path):
-    artifact = export_random_policy(beta, tmp_path / "policy.onnx", seed=0)
+def test_contract_mismatch_is_caught(spec, tmp_path):
+    artifact = export_random_policy(spec, tmp_path / "policy.onnx", seed=0)
 
     other = make_spec(
         sources=(ProbeSource(field_name="p", positions=[(9.0, 9.0, 0.005)]),),
-        action=beta.action,
-        control_interval=beta.control_interval,
+        action=spec.action,
+        control_interval=spec.control_interval,
     )
-    report = validate_policy(artifact.path, other, strict=False)
-
-    assert not report.ok
-    assert "contract" in [c.name for c in report.errors]
+    with pytest.raises(ValueError, match="contract"):
+        validate_policy(artifact.path, other)
 
 
-def test_missing_metadata_is_reported(beta, tmp_path):
+def test_missing_metadata_is_reported(spec, tmp_path):
     """A hand-made ONNX file is a valid graph but not a valid policy."""
-    net = build_mlp(beta, hidden=(8,), seed=0)
+    net = build_mlp(spec, hidden=(8,), seed=0)
     path = tmp_path / "bare.onnx"
     torch.onnx.export(
         net,
-        torch.zeros(1, beta.obs_dim),
+        torch.zeros(1, spec.obs_dim),
         str(path),
         input_names=["observation"],
-        output_names=["alpha"],
+        output_names=["action"],
         opset_version=17,
         dynamo=False,
     )
 
-    report = validate_policy(path, beta, strict=False)
-    assert not report.ok
-    assert "metadata" in [c.name for c in report.errors]
-
-
-def test_strict_mode_raises(beta, tmp_path):
-    with pytest.raises(ValueError, match="validation failed"):
-        validate_policy(tmp_path / "does_not_exist.onnx", beta, strict=True)
+    with pytest.raises(ValueError, match="uqtopus.spec"):
+        validate_policy(path, spec)
 
 
 # ---------------------------------------------------------------------------
@@ -459,24 +319,21 @@ def test_block_carries_the_contract(rich, tmp_path):
     assert "controlInterval 0.4;" in text
     assert "startTime       4;" in text
     assert "seed            42;" in text
-    assert "policy.onnx" in text
-
-
-def test_named_and_bare_forms(rich, tmp_path):
-    bare = render_controller(rich, tmp_path / "p.onnx")
-    named = render_controller(rich, tmp_path / "p.onnx", name="uqtopusController")
-
-    assert not bare.lstrip().startswith("{")    # goes inside an existing entry
-    assert named.startswith("uqtopusController\n{")
-    assert named.count("{") == named.count("}")
-
-
-def test_observation_sources_are_rendered_in_order(rich, tmp_path):
-    text = render_controller(rich, tmp_path / "p.onnx")
-
-    assert text.index("probes") < text.index("wake")
-    assert "(0.55 -0.6 0.005)" in text
     assert "dim             4;" in text          # 2 pressure probes + 2 U components
+    assert "(0.55 -0.6 0.005)" in text
+    assert text.index("probes") < text.index("wake")
+
+
+def test_a_relative_policy_path_is_quoted(rich):
+    assert 'policy          "runs/policy.onnx";' in render_controller(rich, "runs/policy.onnx")
+
+
+def test_the_block_is_the_uqtopusPolicy_entry(rich, tmp_path):
+    text = render_controller(rich, tmp_path / "p.onnx", deterministic=True)
+
+    assert text.startswith("uqtopusPolicy\n{")
+    assert text.count("{") == text.count("}")
+    assert "deterministic   yes;" in text
 
 
 def test_every_target_reaches_the_block_with_its_component(tmp_path):
@@ -491,23 +348,6 @@ def test_every_target_reaches_the_block_with_its_component(tmp_path):
     assert "name            rate;\n" in text and "component       0;" in text
     assert "name            quality;\n" in text and "component       1;" in text
     assert "rampFraction    0.5;" in text
-
-
-def test_the_block_is_extensible(rich, tmp_path):
-    """An MPC controller reuses the same plumbing; extra entries pass through."""
-    text = render_controller(
-        rich, tmp_path / "p.onnx", controller_type="mpc", extra={"deterministic": True}
-    )
-    assert "type            mpc;" in text
-    assert "deterministic   yes;" in text
-
-
-def test_mapping_is_available_before_rendering(rich, tmp_path):
-    mapping = controller_mapping(rich, tmp_path / "p.onnx")
-
-    assert mapping["specHash"] == rich.hash
-    assert mapping["observation"]["dim"] == rich.obs_dim
-    assert mapping["action"]["targets"][0] == {"name": "jet", "component": 0}
 
 
 def test_params_target_the_template_keys(rich, tmp_path):

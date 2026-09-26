@@ -10,11 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, Sequence
+from typing import Any, ClassVar, Sequence
 
 Vec3 = tuple[float, float, float]
-
-# Observation sources
 
 @dataclass(frozen=True)
 class ProbeSource:
@@ -135,8 +133,6 @@ Source = ProbeSource | RegistrySource
 _SOURCE_TYPES = {ProbeSource.kind: ProbeSource, RegistrySource.kind: RegistrySource}
 
 
-# Observation / action specs
-
 @dataclass(frozen=True)
 class ObservationSpec:
     """
@@ -182,19 +178,15 @@ class ActionSpec:
     """
     Declares the action the policy produces and how the solver applies it.
 
-    Bounds are physical. A 'beta' graph emits parameters over [0, 1] and the
-    solver rescales into [low, high]; a 'gaussian' graph emits mean and log_std
-    already in physical units.
+    The policy samples the action from a Gaussian without bounds, and the solver
+    clips it to [low, high] when applying it.
 
     Parameters:
         name (str): action label, used in trajectory columns.
         targets (str or sequence of str): what the action drives. Target i
             receives component i, so this order is the action vector order.
-        n_components (int or None): action dimension. None takes it from the
-            number of targets.
         low, high (float or sequence of float): bounds in the units of the
-            action, scalar or per component.
-        distribution ('gaussian' or 'beta'): policy distribution family.
+            action, scalar or one per target.
         ramp_fraction (float): the solver ramps linearly from the previous
             action to the new one over this fraction of the control interval.
             0 means an immediate step.
@@ -204,73 +196,44 @@ class ActionSpec:
     targets: Any
     low: float | Sequence[float]
     high: float | Sequence[float]
-    n_components: int | None = None
-    distribution: Literal["gaussian", "beta"] = "gaussian"
     ramp_fraction: float = 0.0
 
     def __post_init__(self) -> None:
-        targets = self._normalize_targets(self.targets)
+        if isinstance(self.targets, str):
+            targets = (self.targets,)
+        else:
+            targets = tuple(str(t) for t in self.targets)
+        if not targets:
+            raise ValueError("ActionSpec requires at least one target")
+        if len(set(targets)) != len(targets):
+            raise ValueError(f"ActionSpec has duplicate targets: {list(targets)}")
         object.__setattr__(self, "targets", targets)
 
-        n_components = len(targets) if self.n_components is None else self.n_components
-        if n_components != len(targets):
-            raise ValueError(
-                f"the action declares {n_components} components but has "
-                f"{len(targets)} target(s) {list(targets)}; one target drives "
-                "one component"
-            )
-        object.__setattr__(self, "n_components", n_components)
+        for label in ("low", "high"):
+            value = getattr(self, label)
+            if isinstance(value, (int, float)):
+                values = (float(value),) * len(targets)
+            else:
+                values = tuple(float(v) for v in value)
+            if len(values) != len(targets):
+                raise ValueError(
+                    f"ActionSpec.{label} has {len(values)} entries for {len(targets)} targets"
+                )
+            object.__setattr__(self, label, values)
 
-        low = self._broadcast(self.low, "low")
-        high = self._broadcast(self.high, "high")
-        for lo, hi in zip(low, high):
-            if not lo < hi:
-                raise ValueError(f"ActionSpec requires low < high, got ({lo}, {hi})")
-        object.__setattr__(self, "low", low)
-        object.__setattr__(self, "high", high)
-
-        if self.distribution not in ("gaussian", "beta"):
-            raise ValueError(
-                f"Unsupported distribution {self.distribution!r}; use 'gaussian' or 'beta'"
-            )
+        if not all(lo < hi for lo, hi in zip(self.low, self.high)):
+            raise ValueError(f"ActionSpec requires low < high, got {self.low} and {self.high}")
         if not 0.0 <= self.ramp_fraction <= 1.0:
-            raise ValueError(
-                f"ramp_fraction must be in [0, 1], got {self.ramp_fraction}"
-            )
-
-    @staticmethod
-    def _normalize_targets(value: Any) -> tuple[str, ...]:
-        """Bring the targets to a tuple of names, in action component order."""
-        names = (value,) if isinstance(value, str) else tuple(str(v) for v in value)
-        if not names:
-            raise ValueError("ActionSpec requires at least one target")
-        if len(set(names)) != len(names):
-            raise ValueError(f"ActionSpec has duplicate targets: {list(names)}")
-        return names
-
-    def _broadcast(self, value: Any, label: str) -> tuple[float, ...]:
-        if isinstance(value, (int, float)):
-            return tuple(float(value) for _ in range(self.n_components))
-        values = tuple(float(v) for v in value)
-        if len(values) != self.n_components:
-            raise ValueError(
-                f"ActionSpec.{label} has {len(values)} entries "
-                f"but n_components is {self.n_components}"
-            )
-        return values
+            raise ValueError(f"ramp_fraction must be in [0, 1], got {self.ramp_fraction}")
 
     @property
-    def dim(self) -> int:
-        return self.n_components
+    def n_components(self) -> int:
+        return len(self.targets)
 
     def component_names(self) -> list[str]:
         if self.n_components == 1:
             return [self.name]
         return [f"{self.name}.{i}" for i in range(self.n_components)]
-
-    @property
-    def target_names(self) -> list[str]:
-        return list(self.targets)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -279,18 +242,15 @@ class ActionSpec:
             "n_components": self.n_components,
             "low": list(self.low),
             "high": list(self.high),
-            "distribution": self.distribution,
             "ramp_fraction": self.ramp_fraction,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ActionSpec":
         payload = dict(data)
-        payload["targets"] = tuple(payload["targets"])
+        payload.pop("n_components")
         return cls(**payload)
 
-
-# Policy spec
 
 @dataclass(frozen=True)
 class PolicySpec:
@@ -303,8 +263,8 @@ class PolicySpec:
         control_interval (float): simulated time between policy evaluations.
         start_time (float): time at which control begins. Before it, the solver
             runs uncontrolled (warm start from a developed base state).
-        end_time (float or None): time at which control stops. None means the
-            end of the run.
+        end_time (float or None): time at which control stops, the last action
+            holding from then on. None means the end of the run.
     """
 
     observation: ObservationSpec
@@ -325,26 +285,22 @@ class PolicySpec:
 
     @property
     def act_dim(self) -> int:
-        return self.action.dim
+        return self.action.n_components
 
     @property
     def input_names(self) -> tuple[str, ...]:
-        """ONNX input names implied by the distribution family."""
-        if self.action.distribution == "beta":
-            return ("observation",)
+        """ONNX input names."""
         return ("observation", "noise")
 
     @property
     def output_names(self) -> tuple[str, ...]:
-        """ONNX output names implied by the distribution family."""
-        if self.action.distribution == "beta":
-            return ("alpha", "beta")
+        """ONNX output names."""
         return ("action",)
 
     @property
     def noise_dim(self) -> int:
-        """Number of standard normal values the solver must supply per step."""
-        return self.act_dim if self.action.distribution == "gaussian" else 0
+        """Number of standard normal values the solver supplies per step."""
+        return self.act_dim
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -365,8 +321,8 @@ class PolicySpec:
             end_time=data.get("end_time"),
         )
 
-    def to_json(self, indent: int | None = None) -> str:
-        return json.dumps(self.to_dict(), sort_keys=True, indent=indent)
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), sort_keys=True)
 
     @classmethod
     def from_json(cls, text: str) -> "PolicySpec":
@@ -385,7 +341,6 @@ class PolicySpec:
             "uqtopus.spec": self.to_json(),
             "uqtopus.obs_dim": str(self.obs_dim),
             "uqtopus.act_dim": str(self.act_dim),
-            "uqtopus.distribution": self.action.distribution,
             "uqtopus.action_low": " ".join(str(v) for v in self.action.low),
             "uqtopus.action_high": " ".join(str(v) for v in self.action.high),
             "uqtopus.control_interval": str(self.control_interval),
@@ -405,17 +360,8 @@ class PolicySpec:
             )
         return cls.from_json(metadata["uqtopus.spec"])
 
-    def trajectory_columns(self) -> list[str]:
-        """Canonical column order of the trajectory file written by the solver."""
-        return (
-            ["time"]
-            + self.observation.component_names()
-            + self.action.component_names()
-        )
-
     def __repr__(self) -> str:
         return (
             f"PolicySpec(obs_dim={self.obs_dim}, act_dim={self.act_dim}, "
-            f"dist={self.action.distribution!r}, dt={self.control_interval}, "
-            f"hash={self.hash})"
+            f"dt={self.control_interval}, hash={self.hash})"
         )

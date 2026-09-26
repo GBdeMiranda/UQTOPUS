@@ -34,6 +34,8 @@ def _scalar(value: Any) -> str:
     if _is_number(value):
         text = repr(float(value)) if isinstance(value, float) else str(value)
         return text.rstrip("0").rstrip(".") if "." in text and "e" not in text else text
+    if isinstance(value, Path):
+        return f'"{value}"'
     text = str(value)
     return text if _BARE_WORD.match(text) else f'"{text}"'
 
@@ -99,119 +101,77 @@ def format_block(mapping: Mapping[str, Any], depth: int = 0) -> str:
     return "\n".join(lines)
 
 
-def format_entries(mapping: Mapping[str, Any], depth: int = 0) -> str:
-    """Render a mapping as bare entries, without the enclosing braces."""
-    block = format_block(mapping, depth)
-    return "\n".join(block.splitlines()[1:-1])
-
-
-# The controller block
-
-def controller_mapping(
+def render_controller(
     spec: PolicySpec,
     policy: str | Path,
     *,
-    controller_type: str = "uqtopusPolicy",
     seed: int | None = None,
-    extra: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+    deterministic: bool = False,
+) -> str:
     """
-    Build the controller entries as a plain mapping, before rendering.
+    Render the controller as the uqtopusPolicy entry of an OpenFOAM dictionary.
 
-    Exposed separately so a case that needs a different layout can reshape the
-    mapping instead of parsing the rendered text.
+    Parameters:
+        spec (PolicySpec): the contract. Its hash is written into the block, so
+            a case dictionary that drifts from the policy is caught at startup.
+        policy (str or Path): path to the .onnx file, as the solver will see it;
+            a relative path starts at the case directory.
+        seed (int or None): RNG seed for action sampling.
+        deterministic (bool): feed the policy a zero draw, so the solver
+            applies the mean action.
+
+    Returns:
+        str: the dictionary text, without a trailing newline.
     """
-    observation = {
-        "dim": spec.obs_dim,
-        "sources": [
-            {_camel(k): v for k, v in source.to_dict().items() if v is not None}
-            for source in spec.observation.sources
-        ],
-    }
-
-    action = {
-        "name": spec.action.name,
-        "nComponents": spec.action.n_components,
-        "distribution": spec.action.distribution,
-        "rampFraction": spec.action.ramp_fraction,
-        "low": list(spec.action.low),
-        "high": list(spec.action.high),
-        "targets": [
-            {"name": name, "component": index}
-            for index, name in enumerate(spec.action.targets)
-        ],
-    }
-
-    mapping: dict[str, Any] = {
-        "type": controller_type,
-        "policy": str(policy),
+    mapping = {
+        "type": "uqtopusPolicy",
+        "policy": Path(policy),
         "specHash": spec.hash,
         "controlInterval": spec.control_interval,
         "startTime": spec.start_time,
         "endTime": spec.end_time,
         "seed": seed,
-        "observation": observation,
-        "action": action,
+        "deterministic": deterministic,
+        "observation": {
+            "dim": spec.obs_dim,
+            "sources": [
+                {_camel(k): v for k, v in source.to_dict().items() if v is not None}
+                for source in spec.observation.sources
+            ],
+        },
+        "action": {
+            "name": spec.action.name,
+            "nComponents": spec.action.n_components,
+            "rampFraction": spec.action.ramp_fraction,
+            "low": list(spec.action.low),
+            "high": list(spec.action.high),
+            "targets": [
+                {"name": name, "component": index}
+                for index, name in enumerate(spec.action.targets)
+            ],
+        },
     }
-    if extra:
-        mapping.update(extra)
-    return mapping
-
-
-def render_controller(
-    spec: PolicySpec,
-    policy: str | Path,
-    *,
-    name: str | None = "uqtopusPolicy",
-    controller_type: str = "uqtopusPolicy",
-    seed: int | None = None,
-    extra: Mapping[str, Any] | None = None,
-) -> str:
-    """
-    Render the controller as OpenFOAM dictionary text.
-
-    Parameters:
-        spec (PolicySpec): the contract. Its hash is written into the block, so
-            a case dictionary that drifts from the policy is caught at startup.
-        policy (str or Path): path to the .onnx file, as the solver will see it.
-        name (str or None): wrap the entries in a named sub-dictionary. The
-            solver looks the contract up in controlDict under this name. None
-            emits bare entries.
-        controller_type (str): the 'type' entry the solver dispatches on.
-            Defaults to the ONNX policy; an MPC controller reusing the same
-            observation and action plumbing would pass its own.
-        seed (int or None): RNG seed for action sampling, recorded so an
-            episode can be replayed.
-        extra (mapping or None): additional entries, merged in last.
-
-    Returns:
-        str: the dictionary text, without a trailing newline.
-    """
-    mapping = controller_mapping(
-        spec, policy, controller_type=controller_type, seed=seed, extra=extra
-    )
-    if name is None:
-        return format_entries(mapping)
-    return f"{name}\n" + format_block(mapping)
+    return "uqtopusPolicy\n" + format_block(mapping)
 
 
 def controller_params(
     spec: PolicySpec,
     policy: str | Path,
-    keys: str | Sequence[str],
-    **kwargs: Any,
+    keys: Sequence[str],
+    *,
+    seed: int | None = None,
+    deterministic: bool = False,
 ) -> dict[str, str]:
     """
     Build the parameter mapping consumed by uqtopus.run_simulation.
 
     Parameters:
-        keys (str or sequence of str): template keys in the package's
+        keys (sequence of str): template keys in the package's
             'folder__file__variable' form, e.g.
             'system__controlDict__controller' to fill a {{ controller }}
-            placeholder in the case's system/controlDict. Several keys render
-            the same block into several files.
+            placeholder in the case's system/controlDict. Every key gets the
+            same block.
+        seed, deterministic: as in render_controller.
     """
-    block = render_controller(spec, policy, **kwargs)
-    if isinstance(keys, str):
-        keys = [keys]
+    block = render_controller(spec, policy, seed=seed, deterministic=deterministic)
     return {key: block for key in keys}

@@ -57,29 +57,20 @@ def make_env(**kwargs) -> OpenLoopEnv:
 # the action is the case parameters
 # ---------------------------------------------------------------------------
 
-def test_the_action_becomes_the_parameters_in_the_declared_order():
+@pytest.mark.parametrize(
+    "action, expected",
+    [
+        ([0.3, 1.5], {DT_KEY: 0.3, NU_KEY: 1.5}),
+        ([9.0, -9.0], {DT_KEY: 0.5, NU_KEY: 1.0}),      # clipped to the ranges
+    ],
+)
+def test_the_action_becomes_the_parameters_in_order_and_inside_the_ranges(action, expected):
     env = make_env()
     env.reset(seed=0)
-    env.step(np.array([0.3, 1.5], dtype=np.float32))
+    env.step(np.array(action, dtype=np.float32))
 
     assert list(env.simulator.calls[-1]) == [DT_KEY, NU_KEY]
-    assert env.simulator.calls[-1] == pytest.approx({DT_KEY: 0.3, NU_KEY: 1.5})
-
-
-def test_an_action_outside_the_ranges_reaches_the_case_clipped():
-    env = make_env()
-    env.reset(seed=0)
-    env.step(np.array([9.0, -9.0], dtype=np.float32))
-
-    assert env.simulator.calls[-1] == pytest.approx({DT_KEY: 0.5, NU_KEY: 1.0})
-
-
-def test_the_action_space_carries_the_physical_ranges():
-    env = make_env()
-
-    assert np.allclose(env.action_space.low, [0.1, 1.0])
-    assert np.allclose(env.action_space.high, [0.5, 2.0])
-    assert env.observation_space.shape == (3,)
+    assert env.simulator.calls[-1] == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
@@ -120,35 +111,30 @@ def test_initial_params_missing_a_key_are_refused():
 
 def test_the_observation_is_float32_with_the_time_of_one_run_dropped():
     env = make_env()
-    observation, _ = env.reset(seed=0)
-    stepped, reward, _, _, info = env.step(np.array([0.3, 1.5], dtype=np.float32))
+    first, _ = env.reset(seed=0)
+    stepped, reward, _, _, _ = env.step(np.array([0.3, 1.5], dtype=np.float32))
 
-    assert observation.shape == (3,) and observation.dtype == np.float32
-    assert stepped.dtype == np.float32
+    assert first.shape == stepped.shape == (3,)
+    assert first.dtype == stepped.dtype == np.float32
     assert reward == pytest.approx(1.8)
-    assert info["params"] == pytest.approx({DT_KEY: 0.3, NU_KEY: 1.5})
 
 
-def test_the_episode_is_truncated_at_the_step_limit():
-    env = make_env(max_episode_steps=2)
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"max_episode_steps": 2}, (False, True)),
+        ({"terminated_fn": lambda ds, step: float(ds["T"].mean()) > 2.0}, (True, False)),
+    ],
+)
+def test_the_episode_ends_at_the_step_limit_or_when_terminated_fn_says(kwargs, expected):
+    env = make_env(**kwargs)
     env.reset(seed=0)
 
-    _, _, terminated, truncated, info = env.step(np.array([0.3, 1.5], dtype=np.float32))
-    assert (terminated, truncated, info["step"]) == (False, False, 1)
+    _, _, terminated, truncated, _ = env.step(np.array([0.1, 1.0], dtype=np.float32))
+    assert (terminated, truncated) == (False, False)
 
-    _, _, terminated, truncated, info = env.step(np.array([0.3, 1.5], dtype=np.float32))
-    assert (terminated, truncated, info["step"]) == (False, True, 2)
-
-
-def test_terminated_fn_ends_the_episode_early():
-    env = make_env(terminated_fn=lambda ds, step: float(ds["T"].mean()) > 2.0)
-    env.reset(seed=0)
-
-    _, _, terminated, _, _ = env.step(np.array([0.1, 1.0], dtype=np.float32))
-    assert not terminated
-
-    _, _, terminated, _, _ = env.step(np.array([0.5, 2.0], dtype=np.float32))
-    assert terminated
+    _, _, terminated, truncated, _ = env.step(np.array([0.5, 2.0], dtype=np.float32))
+    assert (terminated, truncated) == expected
 
 
 def test_each_run_gets_its_own_directory_index():

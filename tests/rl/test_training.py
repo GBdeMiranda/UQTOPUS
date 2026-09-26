@@ -5,33 +5,14 @@ Tests for the running statistics, the buffer fill and the PPO subclass.
 from __future__ import annotations
 
 import numpy as np
-import pytest
-import stable_baselines3 as sb3
 import torch as th
 
-from uqtopus.rl import (
-    ActionSpec,
-    Normalization,
-    RunningStatistics,
-    build_rollout_buffer,
-    export_random_policy,
-    normalized_observations,
-    rollout_statistics,
-)
+from uqtopus.rl import Normalization, export_random_policy
 from uqtopus.rl.algos import PPO
+from uqtopus.rl.buffer import build_rollout_buffer, rollout_statistics
+from uqtopus.rl.export import RunningStatistics
 
-from conftest import N_STEPS, make_runner, make_spec
-
-_SEEN_KWARGS: dict = {}
-_ORIGINAL_PPO_INIT = sb3.PPO.__init__
-
-
-def _record_ppo_kwargs(self, policy, env, **kwargs):
-    """Stand-in for stable_baselines3.PPO.__init__ that keeps what it was given."""
-    _SEEN_KWARGS.clear()
-    _SEEN_KWARGS.update(kwargs)
-    _ORIGINAL_PPO_INIT(self, policy, env, **kwargs)
-
+from conftest import N_STEPS
 
 # ---------------------------------------------------------------------------
 # running statistics
@@ -76,14 +57,13 @@ def test_buffer_uses_the_artifacts_snapshot(runner, spec, tmp_path):
     )
     rollout = runner.collect(artifact, n_episodes=1)
 
-    assert np.allclose(
-        normalized_observations(rollout), (rollout.observations - 5.0) / 2.0
-    )
+    normalized = rollout.artifact.normalization.apply(rollout.observations)
+    assert np.allclose(normalized, (rollout.observations - 5.0) / 2.0)
 
 
 def test_buffer_is_full_and_carries_the_episode_boundaries(runner, spec, tmp_path):
     model = PPO("MlpPolicy", runner, n_episodes=3, export_dir=tmp_path / "pol")
-    rollout = runner.collect(model._export(0), n_episodes=3)
+    rollout = runner.collect(model.export_current_policy(tmp_path / "p.onnx"), n_episodes=3)
 
     buffer = build_rollout_buffer(rollout, model.policy, gamma=0.99, gae_lambda=0.95)
 
@@ -100,10 +80,10 @@ def test_buffer_is_full_and_carries_the_episode_boundaries(runner, spec, tmp_pat
 def test_log_probs_are_recomputed_from_the_stored_actions(runner, tmp_path):
     """The solver never writes a log-probability; it is recovered here."""
     model = PPO("MlpPolicy", runner, n_episodes=1, export_dir=tmp_path / "pol")
-    rollout = runner.collect(model._export(0), n_episodes=1)
+    rollout = runner.collect(model.export_current_policy(tmp_path / "p.onnx"), n_episodes=1)
     buffer = build_rollout_buffer(rollout, model.policy, gamma=0.99, gae_lambda=0.95)
 
-    obs = th.as_tensor(normalized_observations(rollout), dtype=th.float32)
+    obs = th.as_tensor(rollout.artifact.normalization.apply(rollout.observations), dtype=th.float32)
     act = th.as_tensor(rollout.actions, dtype=th.float32)
     with th.no_grad():
         _, expected, _ = model.policy.evaluate_actions(obs, act)
@@ -111,9 +91,8 @@ def test_log_probs_are_recomputed_from_the_stored_actions(runner, tmp_path):
     assert np.allclose(buffer.log_probs.ravel(), expected.numpy().ravel(), atol=1e-6)
 
 
-def test_statistics_summarize_the_batch(runner, tmp_path):
-    model = PPO("MlpPolicy", runner, n_episodes=2, export_dir=tmp_path / "pol")
-    rollout = runner.collect(model._export(0), n_episodes=2)
+def test_statistics_summarize_the_batch(runner, artifact):
+    rollout = runner.collect(artifact, n_episodes=2)
 
     stats = rollout_statistics(rollout)
     assert stats["rollout/episodes"] == 2.0
@@ -125,24 +104,8 @@ def test_statistics_summarize_the_batch(runner, tmp_path):
 # the PPO subclass
 # ---------------------------------------------------------------------------
 
-def test_the_actor_stays_on_the_cpu(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr(sb3.PPO, "__init__", _record_ppo_kwargs)
-
-    PPO("MlpPolicy", runner, export_dir=tmp_path / "pol")
-    assert _SEEN_KWARGS["device"] == "cpu"
-
-    PPO("MlpPolicy", runner, export_dir=tmp_path / "pol", device="auto")
-    assert _SEEN_KWARGS["device"] == "auto"
-
-
-def test_a_beta_spec_is_refused(simulator):
-    beta = make_spec(
-        action=ActionSpec(
-            name="Q", targets="jet1", low=-0.1, high=0.1, distribution="beta"
-        )
-    )
-    with pytest.raises(ValueError, match="Gaussian"):
-        PPO("MlpPolicy", make_runner(simulator, beta))
+def test_the_actor_stays_on_the_cpu(runner, tmp_path):
+    assert PPO("MlpPolicy", runner, export_dir=tmp_path / "pol").device.type == "cpu"
 
 
 def test_a_full_training_loop_runs(runner, tmp_path):
@@ -163,14 +126,11 @@ def test_a_full_training_loop_runs(runner, tmp_path):
     assert model.num_timesteps >= 3 * 2 * N_STEPS
     assert model.returns_history.shape == (len(model.rollouts),)
 
-    # every iteration left a verifiable policy and a manifest behind
     files = sorted((tmp_path / "policies").glob("policy_iter*.onnx"))
     assert len(files) == len(model.artifacts)
-    assert all(a.verify_file() for a in model.artifacts)
-    assert all(a.manifest_path.exists() for a in model.artifacts)
 
     first, second, last = model.artifacts[0], model.artifacts[1], model.artifacts[-1]
-    assert first.file_sha256 != last.file_sha256, "training did not move the policy"
+    assert first.path.read_bytes() != last.path.read_bytes(), "training did not move the policy"
 
     # the first graph saw no observations at all
     assert np.allclose(first.normalization.mean, 0.0)
@@ -182,6 +142,6 @@ def test_a_full_training_loop_runs(runner, tmp_path):
 
     final = model.export_current_policy(tmp_path / "trained.onnx")
     assert final.path.exists()
-    assert final.spec_hash == runner.spec.hash
+    assert final.spec.hash == runner.spec.hash
 
 

@@ -10,7 +10,6 @@ from functools import partial
 import numpy as np
 import pytest
 
-# sb3 pulls in torch, onnx and gymnasium, all imported eagerly by uqtopus.rl.
 pytest.importorskip("stable_baselines3")
 
 from uqtopus import OpenFOAMSimulator  # noqa: E402
@@ -21,7 +20,6 @@ from uqtopus.rl import (  # noqa: E402
     PolicySpec,
     ProbeSource,
     export_random_policy,
-    write_trajectory,
 )
 from uqtopus.rl.runner import ClosedLoopRunner  # noqa: E402
 
@@ -43,6 +41,24 @@ def make_spec(
         start_time=start_time,
         end_time=end_time,
     )
+
+
+def write_trajectory(path, spec, times, observations, actions, seed=0):
+    """Write a trajectory file the way the solver does."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = ["time", *spec.observation.component_names(), *spec.action.component_names()]
+    lines = [
+        "# uqtopus trajectory",
+        f"# specHash         {spec.hash}",
+        f"# seed             {seed}",
+        f"# columns          {' '.join(columns)}",
+    ]
+    lines += [
+        " ".join(f"{v:.10g}" for v in (t, *obs, *act))
+        for t, obs, act in zip(times, observations, actions)
+    ]
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def write_force_coeffs(case_dir, start, times, cd, cl):
@@ -68,10 +84,11 @@ def run_fake_solver(case_dir, params, *, spec, n_steps, fail_after, write_coeffs
     # far from zero, so a normalization mistake shows up downstream
     obs = 5.0 + 2.0 * rng.normal(size=(steps, spec.obs_dim))
     act = rng.uniform(-0.1, 0.1, (steps, spec.act_dim))
-    write_trajectory(
-        case_dir / "postProcessing/uqtopusPolicy/0/trajectory.dat",
-        spec, times, obs, act, seed=seed,
-    )
+    if steps:
+        write_trajectory(
+            case_dir / "postProcessing/uqtopusPolicy/0/trajectory.dat",
+            spec, times, obs, act, seed=seed,
+        )
 
     if write_coeffs:
         cfd = np.round(np.arange(1, steps * 40 + 1) * 0.01, 6)

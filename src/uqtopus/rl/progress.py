@@ -2,7 +2,7 @@
 Training Progress and Log
 
 A progress bar over the training iterations, and the same run as a fixed-width
-table on disk.
+table on disk and on screen.
 """
 
 from __future__ import annotations
@@ -15,27 +15,25 @@ from tqdm import tqdm
 
 class TrainingLog:
     """
-    Progress bar over training iterations, and a fixed-width table on disk.
+    Progress bar over training iterations, and a fixed-width table on disk and
+    on screen.
 
     Parameters:
         path (str or Path): the table file, truncated on construction.
         total (int): number of iterations.
-        echo (bool): also print every line, through the bar.
     """
 
-    def __init__(self, path: str | Path, total: int, *, echo: bool = False) -> None:
+    def __init__(self, path: str | Path, total: int) -> None:
         self.path = Path(path)
         self.path.write_text("")
         self.total = int(total)
-        self.echo = echo
         self.bar = tqdm(total=self.total, desc="training", unit="iter")
         self._widths: dict[str, int] = {}
 
     def _write(self, line: str) -> None:
         with open(self.path, "a") as handle:
             handle.write(line + "\n")
-        if self.echo:
-            tqdm.write(line)
+        tqdm.write(line)
 
     def comment(self, *lines: str) -> None:
         """Write lines prefixed with '#'."""

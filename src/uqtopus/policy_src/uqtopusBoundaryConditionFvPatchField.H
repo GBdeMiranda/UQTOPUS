@@ -9,6 +9,15 @@ Description
     Keeps the value entry until the first decision.
 
 Usage
+    \verbatim
+    patchA
+    {
+        type            uqtopusBoundaryCondition;
+        direction       (1 0 0);
+        value           uniform (0 0 0);
+    }
+    \endverbatim
+
     \table
         Property  | Description                     | Required    | Default
         action    | target name in the controller   | no          | patch name

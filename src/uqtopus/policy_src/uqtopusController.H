@@ -73,6 +73,8 @@ class uqtopusController
 
     wordList targetNames_;
 
+    mutable boolList claimed_;
+
     mutable scalarField actionOld_;
     mutable scalarField actionNew_;
     mutable scalarField action_;
@@ -121,6 +123,7 @@ public:
 
     static const dictionary& contractDict(const fvMesh&);
 
+    // Component of the named target, -1 when none, and marks it taken
     label component(const word& target) const;
 
     const wordList& targetNames() const

@@ -33,10 +33,6 @@ void Foam::uqtopusController::readContract(const dictionary& dict)
     endTime_ = dict.lookupOrDefault<scalar>("endTime", 0);
 
     const dictionary& obs = dict.subDict("observation");
-    if (obs.lookupOrDefault<label>("stack", 1) != 1)
-    {
-        FatalErrorInFunction << "stack must be 1" << abort(FatalError);
-    }
 
     PtrList<dictionary> sources(obs.lookup("sources"));
     if (sources.empty())
@@ -110,6 +106,7 @@ void Foam::uqtopusController::readContract(const dictionary& dict)
         }
         targetNames_[component] = targets[i].lookup<word>("name");
     }
+    claimed_ = boolList(targets.size(), false);
     low_ = scalarField(act.lookup("low"));
     high_ = scalarField(act.lookup("high"));
 
@@ -413,6 +410,7 @@ Foam::label Foam::uqtopusController::component(const word& target) const
     {
         if (targetNames_[i] == target)
         {
+            claimed_[i] = true;
             return i;
         }
     }
@@ -469,8 +467,8 @@ void Foam::uqtopusController::update() const
     const Time& runTime = mesh_.time();
     const label timeIndex = runTime.timeIndex();
 
-    // once per time step
-    if (curTimeIndex_ == timeIndex)
+    // once per time step, and never while the case is being built
+    if (curTimeIndex_ == timeIndex || timeIndex == runTime.startTimeIndex())
     {
         return;
     }
@@ -488,10 +486,26 @@ void Foam::uqtopusController::update() const
         return;
     }
 
-    const bool lastStep = t > runTime.endTime().value() - 0.5*dt;
+    // no decision at the last time step, nor from the end of control on
+    const bool stopped =
+        t > runTime.endTime().value() - 0.5*dt
+     || (hasEndTime_ && t > endTime_ - 0.5*dt);
 
-    if (!lastStep && t >= startTime_ + nActions_*controlInterval_ - 0.5*dt)
+    if (!stopped && t >= startTime_ + nActions_*controlInterval_ - 0.5*dt)
     {
+        if (nActions_ == 0)
+        {
+            forAll(claimed_, i)
+            {
+                if (!claimed_[i])
+                {
+                    FatalErrorInFunction
+                        << "nothing in the case takes action target "
+                        << targetNames_[i] << abort(FatalError);
+                }
+            }
+        }
+
         const scalarField obs(observation());
 
         if (Pstream::master())

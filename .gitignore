@@ -77,4 +77,3 @@ share/python-wheels/
 lnInclude/
 *.dep
 processor*/
-postProcessing/

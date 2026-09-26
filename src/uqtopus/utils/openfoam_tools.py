@@ -207,7 +207,7 @@ def read_uq_experiment(
     return combined_ds
 
 
-def load_config(config_path: str = "config.yaml") -> dict:
+def load_config(config_path: str | Path = "config.yaml") -> dict:
     """
     Loads a YAML or JSON configuration file.
 
@@ -217,14 +217,10 @@ def load_config(config_path: str = "config.yaml") -> dict:
     Returns:
         dict with the configuration contents.
     """
-    try:
-        with open(config_path, "r") as f:
-            if config_path.lower().endswith(".json"):
-                return json.load(f)
-            return yaml.safe_load(f)
-    except Exception as e:
-        logger.error("Error loading config from %s: %s", config_path, e)
-        return {}
+    with open(config_path, "r") as f:
+        if str(config_path).lower().endswith(".json"):
+            return json.load(f)
+        return yaml.safe_load(f)
 
 
 # =============================================================================

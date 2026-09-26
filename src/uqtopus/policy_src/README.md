@@ -1,6 +1,6 @@
 # libuqtopusPolicy
 
-One OpenFOAM library, `libuqtopusPolicy.so`. The solver loads it and finds two new types in it: a boundary condition and a source term.
+One OpenFOAM library, `libuqtopusPolicy.so`. The solver loads it and finds three new types in it: a boundary condition, a source term and a `Function1<scalar>`.
 
 | file | what it is | depends on |
 |---|---|---|
@@ -8,6 +8,7 @@ One OpenFOAM library, `libuqtopusPolicy.so`. The solver loads it and finds two n
 | `uqtopusController.C/.H` | one decision per control step, shared by every target. Owns the probes, the schedule, the ramp, the bounds and the trajectory file | `onnxPolicy`, finiteVolume |
 | `uqtopusBoundaryConditionFvPatchField.C/.H` | the boundary condition, registered as `uqtopusBoundaryCondition`. Takes one component of the action and writes it on its patch | `uqtopusController` |
 | `uqtopusSource.C/.H` | the source term, an `fvModel` registered as `uqtopusSource`. Takes one component of the action and adds it to the equation of one field in a set of cells | `uqtopusController` |
+| `uqtopusPolicyFunction1.C/.H` | a `Function1<scalar>` registered as `uqtopusPolicy`. Returns one component of the action wherever the solver reads a scalar input through `Function1<scalar>::New` | `uqtopusController` |
 
 `uqtopusController` lives in the mesh registry, so N targets driven by the same policy see the same action vector.  Any new kind of target finds it the same way, with `uqtopusController::New(mesh, dict)`, and reads its own component.
 
@@ -15,7 +16,7 @@ One OpenFOAM library, `libuqtopusPolicy.so`. The solver loads it and finds two n
 
 Once per control interval:
 
-1. `uqtopusController` reads the field named in the dictionary;
+1. `uqtopusController` reads the observation sources of the contract;
 2. it hands them to `onnxPolicy`, which draws one standard normal number per action component, runs the graph and returns the action vector;
 3. it ramps linearly from the previous action over `rampFraction` of the interval, and appends one row to `postProcessing/uqtopusPolicy/<startTime>/trajectory.dat`;
 4. every target takes its own component and applies it. The boundary condition writes `direction * action[component]` on the faces of its patch.
@@ -24,7 +25,7 @@ The graph returns the sampled action, and the controller clips it to the action 
 
 Two guards matter and neither raises an error when it is missing:
 
-- OpenFOAM calls `updateCoeffs()` once per outer corrector of the PIMPLE loop, up to fifteen times per time step in this case. Evaluating there would apply an action different from the one recorded. Guarded by `curTimeIndex_`.
+- OpenFOAM calls `updateCoeffs()` once per outer corrector of the PIMPLE loop, several times per time step. Evaluating there would apply an action different from the one recorded. Guarded by `curTimeIndex_`.
 - In a decomposed run every process would draw its own number and apply a different velocity to its slice of the patch. Only the master draws, and the result is scattered.
 
 ## The type name says which intervention point
@@ -35,6 +36,7 @@ The name in the `type` entry selects a class, and a boundary condition and a sou
 |---|---|
 | `uqtopusBoundaryCondition` | a field on a patch |
 | `uqtopusSource` | a source term in the equations, an `fvModel` |
+| `uqtopusPolicy` | a scalar input read with `Function1<scalar>::New` |
 
 `onnxPolicy` and `uqtopusController` are shared by all of them.
 
@@ -47,11 +49,11 @@ Implements uqtopus contract.
 | graph input `observation` | float32, shape (1, obs_dim) |
 | graph input `noise` | float32, shape (1, act_dim) |
 | graph output `action` | float32, shape (1, act_dim), sampled |
-| checked from the ONNX metadata | `uqtopus.spec_hash`, `uqtopus.obs_dim`, `uqtopus.act_dim`, `uqtopus.distribution` |
+| checked from the ONNX metadata | `uqtopus.spec_hash`, `uqtopus.obs_dim`, `uqtopus.act_dim` |
 
 The hash in the dictionary and the hash in the file must agree, otherwise the run stops before the first time step.
 
-Restrictions, all enforced at construction: `stack 1` and a Gaussian distribution.
+Every target of the action has to be taken by a patch, a source term or a `Function1`, otherwise the run stops at the first decision.
 
 ## Building
 
@@ -104,6 +106,7 @@ uqtopusPolicy
     controlInterval 0.4;
     startTime       0;
     seed            7;
+    deterministic   no;
     observation     { ... }
     action          { ... }
 }
@@ -132,3 +135,15 @@ heater
     volumeMode      specific;
 }
 ```
+
+A scalar input that the solver reads with `Function1<scalar>::New` takes a `uqtopusPolicy` entry. `action` names the target and `value` is returned until the first decision; both are required:
+
+```
+modelA
+{
+    inputA          { type uqtopusPolicy; action targetA; value 0; }
+    inputB          { type scale; scale { type uqtopusPolicy; action targetB; value 0.5; } value 2; }
+}
+```
+
+The other `Function1` types of OpenFOAM compose with it, as `scale` does above. The entry has to be read from its file by reference, as in `IOdictionary(...).subDict(...)`, and a class that copies its dictionary stops the run at construction. The stock `uniformFixedValue` on a scalar field reads it this way. The stock `fvModels` copy theirs, and a source term goes through `uqtopusSource` instead.

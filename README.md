@@ -159,7 +159,7 @@ UQTOPUS/
 
 ## Closed-loop RL module
 
-Needed only for `uqtopus.rl`. The package ships an OpenFOAM library that adds the `uqtopusBoundaryCondition` boundary condition. The solver loads it through the `libs()` line of `controlDict`.
+Needed only for `uqtopus.rl`. The package ships an OpenFOAM library that adds three ways to apply the action: the `uqtopusBoundaryCondition` boundary condition, on a patch, the `uqtopusSource` source term, in a set of cells, and the `uqtopusPolicy` `Function1`, for a scalar input the solver reads. The solver loads it through the `libs()` line of `controlDict`.
 
 ### 1. Install it
 
@@ -203,9 +203,15 @@ patch
 }
 ```
 
+A scalar input of a model, read by the solver with `Function1<scalar>::New` from a file such as `constant/<model>Properties`, takes a `uqtopusPolicy` entry. `action` names the target and `value` holds until the first decision:
+```
+inputA          { type uqtopusPolicy; action targetA; value 0; }
+```
+The class reading it takes the dictionary by reference from its file, as `IOdictionary(...).subDict(...)` gives it. The stock `uniformFixedValue` does the same on a scalar field.
+
 ### 4. Declare what the policy reads and drives
 
-A `PolicySpec` is the contract both sides read. `ActionSpec` names the patches the action drives, one component each, in the order written. The observation is a list of sources, concatenated in declaration order, and there are two kinds.
+A `PolicySpec` is the contract both sides read. `ActionSpec` names the targets the action drives, one component each, in the order written. The observation is a list of sources, concatenated in declaration order, and there are two kinds.
 
 `ProbeSource` reads a field at points. The solver samples the field held in memory during the step, so nothing is read back from a written file:
 ```python
@@ -260,34 +266,55 @@ uqtopusPolicy
 {
     type            uqtopusPolicy;
     policy          "/abs/path/policy.onnx";
-    specHash; controlInterval; startTime; seed; 
+    specHash; controlInterval; startTime; seed; deterministic;
     observation
     {
         dim; sources;
     }
     action
     {
-        name; nComponents; distribution; rampFraction; low; high; targets;
+        name; nComponents; rampFraction; low; high; targets;
     }
 }
 ```
 No worries with the details here, it is all handled by the Python module itself.
 
+Each episode writes `postProcessing/uqtopusPolicy/<startTime>/trajectory.dat`, one row per control step: the observation read at the start of the control interval, the action sampled for it, before the ramp and the clip to `low` and `high`, and as its time, the end of that interval. Each function object in `function_objects` is averaged over the same interval, so `reward_fn` sees, for each action, what happened while it was applied.
+
+To evaluate a trained policy, `runner.collect(artifact, deterministic=True)` applies the mean action instead of a draw.
+
 ### 6. Publish a quantity the mesh does not hold
 
-`RegistrySource` reads a scalar by name, so the case stores it first. OpenFOAM compiles a block of `controlDict` for that, and the case author writes the quantity into it. This one averages a field over the whole mesh, which no single point carries:
+`RegistrySource` reads a scalar by name, so the case stores it first. OpenFOAM compiles a block of `controlDict` for that, and the case author writes the quantity into it: `codeRead` creates the scalar once, `codeExecute` updates it every time step. This one averages a field over the whole mesh, which no single point carries:
 
 ```
 myCustomSource
 {
+    // Specifies a dynamic, runtime-compiled OpenFOAM function object.
     type coded;
     libs ("libutilityFunctionObjects.so");
 
+    // Includes required C++ headers for compilation.
     codeInclude
     #{
         #include "uniformDimensionedFields.H"
     #};
 
+    // Executed at initialization to create and register the field in the object registry.
+    codeRead
+    #{
+        if (!mesh().foundObject<uniformDimensionedScalarField>("myCustomSource"))
+        {
+            uniformDimensionedScalarField* source = new uniformDimensionedScalarField
+            (
+                IOobject("myCustomSource", mesh().time().constant(), mesh()),
+                dimensionedScalar("myCustomSource", dimless, 0)
+            );
+            source->store();
+        }
+    #};
+
+    // Executed at each time step to compute and update the field value.
     codeExecute
     #{
         const volScalarField& p = mesh().lookupObject<volScalarField>("p");

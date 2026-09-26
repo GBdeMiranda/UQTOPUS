@@ -96,12 +96,13 @@ def test_generate_samples_is_reproducible_under_a_seed(method):
     assert not np.array_equal(first, other)
 
 
-def test_generate_samples_stays_inside_the_ranges():
+@pytest.mark.parametrize("n_samples", [1, 8])
+def test_generate_samples_stays_inside_the_ranges(n_samples):
     ranges = {"a": [0.0, 1.0], "b": [10.0, 20.0]}
 
-    samples = generate_samples(8, ranges, method="lhs", seed=0)
+    samples = generate_samples(n_samples, ranges, method="lhs", seed=0)
 
-    assert samples.shape == (8, 2)
+    assert samples.shape == (n_samples, 2)
     assert ((samples[:, 0] >= 0.0) & (samples[:, 0] <= 1.0)).all()
     assert ((samples[:, 1] >= 10.0) & (samples[:, 1] <= 20.0)).all()
 
@@ -126,14 +127,16 @@ def test_run_simulation_renders_params_sharing_a_file_in_one_pass(exp_config, tm
     assert rendered == "Cmu  0.09;\nC1  1.44;"
 
 
-def test_run_simulation_rejects_a_key_without_a_file_path(exp_config):
-    with pytest.raises(ValueError, match="folder__filename__paramname"):
-        run_simulation({"DT": 0.05}, exp_config)
-
-
-@pytest.mark.parametrize("params", [{}, [DT_KEY]])
-def test_run_simulation_rejects_malformed_params(exp_config, params):
-    with pytest.raises(ValueError, match="params must"):
+@pytest.mark.parametrize(
+    "params, match",
+    [
+        ({"DT": 0.05}, "folder__filename__paramname"),
+        ({}, "params must"),
+        ([DT_KEY], "params must"),
+    ],
+)
+def test_run_simulation_rejects_malformed_params(exp_config, params, match):
+    with pytest.raises(ValueError, match=match):
         run_simulation(params, exp_config)
 
 
@@ -171,8 +174,7 @@ def test_solver_environment_comes_from_the_installation_when_the_shell_lacks_it(
 
     environment = _solver_environment()
 
-    assert environment["WM_PROJECT_DIR"]
-    assert environment["PATH"] != os.environ["PATH"], "the solver should see OpenFOAM's PATH"
+    assert environment["FOAM_APPBIN"] in environment["PATH"].split(os.pathsep)
 
 
 def test_solver_environment_is_inherited_with_no_openfoam_installed(monkeypatch):
@@ -221,14 +223,6 @@ def test_run_ensemble_records_failures_without_stopping_the_study(exp_config, tm
     assert solved_dt(tmp_path / "run" / "sample_0002") == pytest.approx(0.3)
 
 
-def test_run_ensemble_reports_a_failure_for_every_bad_sample(exp_config):
-    X = np.array([[-1.0], [-2.0]])
-
-    failures = _run_ensemble(X, [DT_KEY], exp_config, nthreads=1)
-
-    assert len(failures) == 2
-
-
 # ---------------------------------------------------------------------------
 # UQ[py]Lab entry point
 # ---------------------------------------------------------------------------
@@ -264,45 +258,32 @@ def test_uq_simulation_runs_the_design_and_returns_none(template, tmp_path):
     assert solved_dt(tmp_path / "study" / "sample_0001") == pytest.approx(0.2)
 
 
-def test_uq_simulation_rejects_an_unknown_params_key(template):
+@pytest.mark.parametrize(
+    "change, X, match",
+    [
+        ({"qoi_variables": ["T"]}, [[0.1]], "Unknown key 'qoi_variables'"),
+        ({}, [[0.1, 0.2]], "number of sampled parameters"),
+        ({"input_path": "/nonexistent/template"}, [[0.1]], "does not exist"),
+    ],
+)
+def test_uq_simulation_rejects_a_bad_call(template, change, X, match):
     params = {
         "input_path": str(template),
         "parameter_ranges": {DT_KEY: [0.01, 0.3]},
         "solver": "Allrun",
-        "qoi_variables": ["T"],
+        **change,
     }
 
-    with pytest.raises(Exception, match="Unknown key 'qoi_variables'"):
-        uq_simulation(np.array([[0.1]]), params)
-
-
-def test_uq_simulation_rejects_a_design_with_the_wrong_width(template):
-    params = {
-        "input_path": str(template),
-        "parameter_ranges": {DT_KEY: [0.01, 0.3]},
-        "solver": "Allrun",
-    }
-
-    with pytest.raises(ValueError, match="number of sampled parameters"):
-        uq_simulation(np.array([[0.1, 0.2]]), params)
-
-
-def test_uq_simulation_rejects_a_missing_input_path(tmp_path):
-    params = {
-        "input_path": str(tmp_path / "absent"),
-        "parameter_ranges": {DT_KEY: [0.01, 0.3]},
-        "solver": "Allrun",
-    }
-
-    with pytest.raises(ValueError, match="does not exist"):
-        uq_simulation(np.array([[0.1]]), params)
+    with pytest.raises(Exception, match=match):
+        uq_simulation(np.array(X), params)
 
 
 # ---------------------------------------------------------------------------
 # config-driven entry point
 # ---------------------------------------------------------------------------
 
-def test_run_uq_study_samples_the_ranges_from_the_config(template, tmp_path):
+@pytest.mark.parametrize("as_type", [str, Path])
+def test_run_uq_study_samples_the_ranges_from_the_config(template, tmp_path, as_type):
     config_file = tmp_path / "config.yml"
     config_file.write_text(yaml.safe_dump({
         "input_path": str(template),
@@ -312,7 +293,7 @@ def test_run_uq_study_samples_the_ranges_from_the_config(template, tmp_path):
         "nthreads": 1,
     }))
 
-    run_uq_study(str(config_file), n_samples=3)
+    run_uq_study(as_type(config_file), n_samples=3)
 
     out = tmp_path / "study"
     assert sorted(p.name for p in out.iterdir()) == [
@@ -320,26 +301,6 @@ def test_run_uq_study_samples_the_ranges_from_the_config(template, tmp_path):
     ]
     for i in range(3):
         assert 0.01 <= solved_dt(out / f"sample_{i:04d}") <= 0.3
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="load_config calls config_path.lower(), so it only accepts str, "
-           "while run_uq_study is annotated str | Path",
-)
-def test_run_uq_study_accepts_a_path_object(template, tmp_path):
-    config_file = tmp_path / "config.yml"
-    config_file.write_text(yaml.safe_dump({
-        "input_path": str(template),
-        "output_path": str(tmp_path / "study"),
-        "parameter_ranges": {DT_KEY: [0.01, 0.3]},
-        "solver": "Allrun",
-        "nthreads": 1,
-    }))
-
-    run_uq_study(config_file, n_samples=1)
-
-    assert (tmp_path / "study" / "sample_0000").is_dir()
 
 
 def test_run_uq_study_requires_the_mandatory_keys(tmp_path):

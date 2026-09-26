@@ -20,7 +20,8 @@ def generate_samples(n_samples, param_ranges, method='lhs', seed=None, **kwargs)
     n_params = len(param_names)
     
     if method == 'lhs':
-        unit_samples = lhs(n_params, samples=n_samples, criterion='centermaximin', seed=rng)
+        criterion = 'centermaximin' if n_samples > 1 else 'center'
+        unit_samples = lhs(n_params, samples=n_samples, criterion=criterion, seed=rng)
     elif method == 'random':
         unit_samples = rng.random((n_samples, n_params))
     elif method in ('grid', 'fullfact'):
