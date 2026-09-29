@@ -71,6 +71,9 @@ class PPO(sb3.PPO):
         n_jobs (int): how many of those run at once.
         export_dir (str or Path): where the per-iteration .onnx files are
             written.
+        truncated (bool): True when the end of a run cuts the task short rather
+            than reaching a terminal state, so the return of each episode that
+            ran to the end is bootstrapped from its last observation.
         **kwargs: passed to stable-baselines3. Device defaults to 'cpu'.
     """
 
@@ -82,6 +85,7 @@ class PPO(sb3.PPO):
         n_episodes: int = 4,
         n_jobs: int = 1,
         export_dir: str | Path = "policies",
+        truncated: bool = True,
         **kwargs: Any,
     ) -> None:
         # n_steps is a placeholder; the buffer is rebuilt every iteration to fit
@@ -97,6 +101,7 @@ class PPO(sb3.PPO):
         self.n_episodes = n_episodes
         self.n_jobs = n_jobs
         self.export_dir = Path(export_dir)
+        self.truncated = truncated
         self.statistics = RunningStatistics(runner.spec.obs_dim)
         self.artifacts: list[PolicyArtifact] = []
         self.rollouts: list[Rollout] = []
@@ -126,6 +131,7 @@ class PPO(sb3.PPO):
             self.policy,
             gamma=self.gamma,
             gae_lambda=self.gae_lambda,
+            truncated=self.truncated,
         )
 
         # The statistics advance only after the buffer is filled from this

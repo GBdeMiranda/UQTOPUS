@@ -8,6 +8,7 @@ steps, and runs the user's reward function over the result.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -18,14 +19,43 @@ logger = logging.getLogger(__name__)
 
 RewardFn = Callable[[xr.Dataset], "np.ndarray | float"]
 
+_HEADER_NAME = re.compile(r"\S*\([^()]*\)\S*|\S+")
+_TOKEN = re.compile(r"[()]|[^\s()]+")
+
 
 def _column_names(header: list[str], n_columns: int) -> list[str]:
     """Names from the last header line that has one per column, 'time' first."""
     for line in reversed(header):
-        names = line.lstrip("#").split()
+        names = _HEADER_NAME.findall(line.lstrip("#"))
         if len(names) == n_columns:
             return ["time"] + names[1:]
     raise ValueError(f"no header line names the {n_columns} columns")
+
+
+def _cells(line: str) -> list[list[str]]:
+    """The values of one data line, a parenthesized vector or tensor as one cell."""
+    cells: list[list[str]] = []
+    depth = 0
+    for token in _TOKEN.findall(line):
+        if token == "(":
+            if depth == 0:
+                cells.append([])
+            depth += 1
+        elif token == ")":
+            depth -= 1
+        elif depth:
+            cells[-1].append(token)
+        else:
+            cells.append([token])
+    return cells
+
+
+def _component_names(name: str, size: int) -> list[str]:
+    """Variable names for a column of size values: x, y, z for a vector, else 0, 1, ..."""
+    if size == 1:
+        return [name]
+    suffixes = ("x", "y", "z") if size == 3 else range(size)
+    return [f"{name}.{suffix}" for suffix in suffixes]
 
 
 def read_function_object(
@@ -46,7 +76,8 @@ def read_function_object(
             more than one. None reads the only file.
 
     Returns:
-        xr.Dataset indexed by 'time', with one variable per column.
+        xr.Dataset indexed by 'time', with one variable per column, and one per
+        component for a column holding a vector or tensor.
     """
     root = Path(case_dir) / "postProcessing" / name
     time_dirs = sorted(root.iterdir(), key=lambda d: float(d.name))
@@ -64,16 +95,18 @@ def read_function_object(
             continue
         lines = path.read_text().splitlines()
         header = [line for line in lines if line.startswith("#")]
-        rows = [line.split() for line in lines if line.strip() and not line.startswith("#")]
+        rows = [_cells(line) for line in lines if line.strip() and not line.startswith("#")]
         if rows:
-            tables.append(np.asarray(rows, dtype=np.float64))
+            sizes = [len(cell) for cell in rows[0]]
+            tables.append(np.array([[float(v) for cell in row for v in cell] for row in rows]))
 
     table = np.vstack(tables)
     # later restarts overwrite earlier samples at the same time
     _, keep = np.unique(table[::-1, 0], return_index=True)
     table = table[::-1][keep]
 
-    columns = _column_names(header, table.shape[1])
+    names = _column_names(header, len(sizes))
+    columns = [c for name, size in zip(names, sizes) for c in _component_names(name, size)]
     return xr.Dataset(
         {column: ("time", table[:, i]) for i, column in enumerate(columns) if i > 0},
         coords={"time": table[:, 0]},
@@ -85,7 +118,10 @@ def align_to_control(
     control_times: np.ndarray,
 ) -> xr.Dataset:
     """
-    Average a signal sampled at CFD resolution over each control interval.
+    Time-average a signal sampled at CFD resolution over each control interval.
+
+    Each sample counts for the time step that ends at it, and the first sample
+    for a step as long as the second.
 
     Parameters:
         series (xr.Dataset or xr.DataArray): indexed by 'time'.
@@ -93,9 +129,9 @@ def align_to_control(
             trajectory labels its rows.
 
     Returns:
-        xr.Dataset indexed by 'time' at the control instants, holding the mean
-        over the interval that ends at each one, or the last earlier sample
-        where that interval holds none.
+        xr.Dataset indexed by 'time' at the control instants, holding the time
+        average over the interval that ends at each one, or the last earlier
+        sample where that interval holds none.
     """
     if isinstance(series, xr.DataArray):
         series = series.to_dataset(name=series.name or "value")
@@ -110,6 +146,8 @@ def align_to_control(
     starts = np.concatenate(([control_times[0] - interval], control_times[:-1]))
     lo = np.searchsorted(source_times, starts, side="right")
     hi = np.searchsorted(source_times, control_times, side="right")
+    steps = np.diff(source_times, prepend=source_times[0])
+    steps[0] = steps[1] if len(steps) > 1 else 1.0
 
     empty = hi <= lo
     if np.any(empty):
@@ -123,7 +161,10 @@ def align_to_control(
     reduced = {}
     for variable, data in series.data_vars.items():
         values = data.values.astype(np.float64)
-        means = [values[a:b].mean() if b > a else values[max(b - 1, 0)] for a, b in zip(lo, hi)]
+        means = [
+            np.average(values[a:b], weights=steps[a:b]) if b > a else values[max(b - 1, 0)]
+            for a, b in zip(lo, hi)
+        ]
         reduced[variable] = ("time", np.array(means))
     return xr.Dataset(reduced, coords={"time": control_times})
 

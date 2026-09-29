@@ -295,7 +295,8 @@ void Foam::uqtopusController::writeRow
             }
         }
         os << endl;
-        os.precision(10);
+        // enough digits to read every double back exactly
+        os.precision(17);
     }
 
     OFstream& os = *trajectory_;

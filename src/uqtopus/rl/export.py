@@ -1,8 +1,8 @@
 """
 Policy Export to ONNX
 
-Bakes the observation normalization, the network and the output transforms into
-one self-describing graph, returned with the frozen statistics in an immutable
+Bakes the observation normalization, the network and the Gaussian draw into one
+self-describing graph, returned with the frozen statistics in an immutable
 PolicyArtifact.
 """
 
@@ -23,9 +23,6 @@ from .spec import PolicySpec
 
 logger = logging.getLogger(__name__)
 
-_LOG_STD_MIN = -5.0
-_LOG_STD_MAX = 2.0
-
 
 @dataclass(frozen=True)
 class Normalization:
@@ -43,6 +40,8 @@ class Normalization:
     def __post_init__(self) -> None:
         object.__setattr__(self, "mean", np.array(self.mean, dtype=np.float64))
         object.__setattr__(self, "std", np.array(self.std, dtype=np.float64))
+        self.mean.flags.writeable = False
+        self.std.flags.writeable = False
 
     @classmethod
     def identity(cls, dim: int) -> "Normalization":
@@ -135,8 +134,9 @@ def _module_device(module: Any) -> torch.device:
 
 class _PolicyGraph(torch.nn.Module):
     """
-    Normalization, actor and Gaussian draw as one module, mapping
-    (observation, noise) to the action.
+    Normalization, actor and Gaussian draw as one module, mapping a float64
+    observation and a float32 noise to the float32 action. The normalization
+    runs in float64 and its result is cast to float32 for the actor.
 
     Parameters:
         net (torch.nn.Module): the actor.
@@ -150,19 +150,18 @@ class _PolicyGraph(torch.nn.Module):
         self.act_dim = spec.act_dim
         device = _module_device(net)
         self.register_buffer(
-            "obs_mean", torch.tensor(normalization.mean, dtype=torch.float32, device=device)
+            "obs_mean", torch.tensor(normalization.mean, dtype=torch.float64, device=device)
         )
         self.register_buffer(
-            "obs_std", torch.tensor(normalization.std, dtype=torch.float32, device=device)
+            "obs_std", torch.tensor(normalization.std, dtype=torch.float64, device=device)
         )
 
     def forward(self, observation, noise):
-        head = self.net((observation - self.obs_mean) / self.obs_std)
+        head = self.net(((observation - self.obs_mean) / self.obs_std).float())
         if isinstance(head, tuple):
             mean, log_std = head
         else:
             mean, log_std = head[:, : self.act_dim], head[:, self.act_dim :]
-        log_std = torch.clamp(log_std, _LOG_STD_MIN, _LOG_STD_MAX)
         return mean + torch.exp(log_std) * noise
 
 
@@ -185,7 +184,7 @@ def export_policy(
 
     Parameters:
         net (torch.nn.Module): maps (batch, obs_dim) to the mean and the log_std
-            before the clamp, either as a pair of (batch, act_dim) tensors or as
+            of the Gaussian, either as a pair of (batch, act_dim) tensors or as
             one (batch, 2 * act_dim) tensor.
         spec (PolicySpec): the contract the graph must implement.
         path (str or Path): destination .onnx file.
@@ -204,7 +203,7 @@ def export_policy(
     graph = _PolicyGraph(net, spec, normalization).eval()
     device = _module_device(graph)
     dummy = (
-        torch.zeros(1, spec.obs_dim, device=device),
+        torch.zeros(1, spec.obs_dim, dtype=torch.float64, device=device),
         torch.zeros(1, spec.noise_dim, device=device),
     )
 

@@ -46,7 +46,7 @@ Implements uqtopus contract.
 
 | | |
 |---|---|
-| graph input `observation` | float32, shape (1, obs_dim) |
+| graph input `observation` | float64, shape (1, obs_dim) |
 | graph input `noise` | float32, shape (1, act_dim) |
 | graph output `action` | float32, shape (1, act_dim), sampled |
 | checked from the ONNX metadata | `uqtopus.spec_hash`, `uqtopus.obs_dim`, `uqtopus.act_dim` |
@@ -56,6 +56,8 @@ The hash in the dictionary and the hash in the file must agree, otherwise the ru
 Every target of the action has to be taken by a patch, a source term or a `Function1`, otherwise the run stops at the first decision.
 
 ## Building
+
+`uqtopus rl-build` runs all of this for an installed package. By hand, from a checkout of the repository:
 
 ### 1. ONNX Runtime
 
@@ -101,6 +103,7 @@ The contract is a top level entry of the same `controlDict`, named `uqtopusPolic
 ```
 uqtopusPolicy
 {
+    type            uqtopusPolicy;
     policy          "/abs/path/policy.onnx";
     specHash        "a1b2c3d4e5f60718";
     controlInterval 0.4;

@@ -44,7 +44,7 @@ def validate_policy(
         )
 
     rng = np.random.default_rng(seed)
-    obs = rng.normal(0.0, 10.0, (n_samples, spec.obs_dim)).astype(np.float32)
+    obs = rng.normal(0.0, 10.0, (n_samples, spec.obs_dim))
     noise = rng.standard_normal((n_samples, spec.noise_dim)).astype(np.float32)
     session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
     (action,) = session.run(None, {"observation": obs, "noise": noise})

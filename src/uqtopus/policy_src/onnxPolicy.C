@@ -66,10 +66,10 @@ Foam::tmp<Foam::scalarField> Foam::onnxPolicy::act
             << observation.size() << abort(FatalError);
     }
 
-    std::vector<float> obs(obsDim_);
+    std::vector<double> obs(obsDim_);
     forAll(observation, i)
     {
-        obs[i] = float(observation[i]);
+        obs[i] = observation[i];
     }
 
     std::vector<float> noise(actDim_, 0.0f);
@@ -92,7 +92,7 @@ Foam::tmp<Foam::scalarField> Foam::onnxPolicy::act
     std::vector<Ort::Value> inputs;
     inputs.push_back
     (
-        Ort::Value::CreateTensor<float>
+        Ort::Value::CreateTensor<double>
         (
             memory, obs.data(), obs.size(), obsShape.data(), obsShape.size()
         )

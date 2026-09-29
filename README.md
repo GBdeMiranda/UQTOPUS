@@ -103,7 +103,7 @@ For more information on configuring and running UQ studies, please refer to the 
 UQTOPUS/
 ├── src/uqtopus/              # Python package
 │   ├── rl/                   # closed-loop reinforcement learning
-│   └── policy_src/           # OpenFOAM library: the ONNX boundary condition
+│   └── policy_src/           # OpenFOAM library: the actuators the policy drives
 ├── examples/                 # Example of usage with scripts and templates
 │   ├── templates/            # OpenFOAM case templates
 │   │   └── base_case/        # Base case with Jinja2 placeholders
@@ -173,7 +173,7 @@ Just run
 ```bash
 uqtopus rl-build --install-onnxruntime
 ```
-to find the OpenFOAM installation, download the ONNX Runtime C++ package if none is present, compile and write the library where the solver already looks for it..
+to find the OpenFOAM installation, download the ONNX Runtime C++ package if none is present, compile and write the library where the solver already looks for it.
 
 Drop `--install-onnxruntime` if you already have the runtime; it is found through `ONNXRUNTIME_ROOT` or under `~/opt`. Useful options:
 
@@ -279,7 +279,7 @@ uqtopusPolicy
 ```
 No worries with the details here, it is all handled by the Python module itself.
 
-Each episode writes `postProcessing/uqtopusPolicy/<startTime>/trajectory.dat`, one row per control step: the observation read at the start of the control interval, the action sampled for it, before the ramp and the clip to `low` and `high`, and as its time, the end of that interval. Each function object in `function_objects` is averaged over the same interval, so `reward_fn` sees, for each action, what happened while it was applied.
+Each episode writes `postProcessing/uqtopusPolicy/<startTime>/trajectory.dat`, one row per control step: the observation read at the start of the control interval, the action sampled for it, before the ramp and the clip to `low` and `high`, and as its time, the end of that interval. Each function object in `function_objects` is time-averaged over the same interval, every sample weighted by its time step, so `reward_fn` sees, for each action, what happened while it was applied. An entry `name/file` reads one file of a function object that writes several, such as `probes/U`, and a column holding a vector or tensor becomes one variable per component: `0.x`, `0.y` and `0.z` for a vector probe.
 
 To evaluate a trained policy, `runner.collect(artifact, deterministic=True)` applies the mean action instead of a draw.
 

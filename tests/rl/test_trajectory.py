@@ -142,6 +142,37 @@ def test_reader_failures_name_the_fix(tmp_path):
     assert set(read_function_object(tmp_path, "forceCoeffs", file="other.dat").data_vars) == {"x"}
 
 
+def test_a_vector_column_becomes_one_variable_per_component(tmp_path):
+    """The layout OpenFOAM 9 probes write for a vector field."""
+    root = tmp_path / "postProcessing" / "probes" / "0"
+    root.mkdir(parents=True)
+    (root / "U").write_text(
+        "# Probe 0 (0.5 0 0)\n# Probe 1 (1 0 0)\n#       Probe     0     1\n#        Time\n"
+        "0.1   (1 0 0)   (0.9 0.1 0)\n0.2   (1.1 0 0)   (0.8 0.2 0)\n"
+    )
+
+    ds = read_function_object(tmp_path, "probes")
+
+    assert set(ds.data_vars) == {"0.x", "0.y", "0.z", "1.x", "1.y", "1.z"}
+    assert np.allclose(ds["1.y"].values, [0.1, 0.2])
+
+
+def test_a_nested_group_is_numbered_in_the_order_written(tmp_path):
+    """The layout OpenFOAM 9 forces write: pressure and viscous vectors in one group."""
+    root = tmp_path / "postProcessing" / "forces" / "0"
+    root.mkdir(parents=True)
+    (root / "forces.dat").write_text(
+        "# Forces\n# CofR                : (0 0 0)\n"
+        "# Time                forces(pressure viscous)    moments(pressure viscous)\n"
+        "0.1\t((1 2 3) (4 5 6))\t((7 8 9) (10 11 12))\n"
+    )
+
+    ds = read_function_object(tmp_path, "forces")
+
+    assert list(ds.data_vars)[:6] == [f"forces(pressure viscous).{i}" for i in range(6)]
+    assert float(ds["moments(pressure viscous).5"][0]) == 12.0
+
+
 # ---------------------------------------------------------------------------
 # alignment onto the control grid
 # ---------------------------------------------------------------------------
@@ -150,6 +181,21 @@ def test_alignment_averages_each_control_interval():
     # (0.0, 0.4] holds samples 0.1..0.4 -> values 0,1,2,3 -> mean 1.5
     aligned = align_to_control(ramp(), np.array([0.4, 0.8, 1.2]))
     assert np.allclose(aligned["v"].values, [1.5, 5.5, 9.5])
+
+
+def test_alignment_weighs_each_sample_by_its_time_step():
+    # (0, 1]: half the time at 1 in steps of 0.05, half at 10 in steps of 0.005
+    times = np.concatenate([
+        np.round(np.arange(1, 11) * 0.05, 6),
+        np.round(0.5 + np.arange(1, 101) * 0.005, 6),
+        np.round(1.0 + np.arange(1, 11) * 0.1, 6),
+    ])
+    values = np.where(times <= 0.5, 1.0, np.where(times <= 1.0, 10.0, 0.0))
+    source = xr.Dataset({"v": ("time", values)}, coords={"time": times})
+
+    aligned = align_to_control(source, np.array([1.0, 2.0]))
+
+    assert np.allclose(aligned["v"].values, [5.5, 0.0])
 
 
 def test_empty_interval_warns_and_holds_the_previous_value(caplog):

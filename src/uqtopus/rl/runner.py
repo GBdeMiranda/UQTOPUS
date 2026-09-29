@@ -107,13 +107,20 @@ class ClosedLoopRunner:
             against what the solver wrote.
         reward_fn (callable): maps the trajectory, with any requested
             functionObject output merged in, to one reward per control step.
+            attrs['diverged'] tells whether the solver diverged; if it did, the
+            trajectory stops before the step whose interval it never finished.
         controller_keys (str or sequence of str): where the controller block is
             rendered, in 'folder__file__variable' form, e.g.
             'system__controlDict__controller'.
         function_objects (sequence of str): functionObject names read from each
             case and aligned onto the control steps before reward_fn sees them.
+            'name/file' reads one file of a functionObject that writes several,
+            such as 'probes/U'.
         run_fn (callable or None): executes a case, as run_fn(case_dir, params).
             None runs the solver locally.
+        divergence_reward (float or None): reward of the step during which the
+            solver diverged, kept as the last step of its episode. None leaves
+            that step out.
     """
 
     def __init__(
@@ -125,6 +132,7 @@ class ClosedLoopRunner:
         controller_keys: str | Sequence[str],
         function_objects: Sequence[str] = (),
         run_fn: RunFn | None = None,
+        divergence_reward: float | None = None,
     ) -> None:
         self.simulator = simulator
         self.spec = spec
@@ -134,6 +142,7 @@ class ClosedLoopRunner:
         )
         self.function_objects = list(function_objects)
         self.run_fn = run_fn or self._run_locally
+        self.divergence_reward = divergence_reward
 
     def collect(
         self,
@@ -232,23 +241,36 @@ class ClosedLoopRunner:
             logger.warning("Episode %d diverged in %s", index, case_dir)
             reason = f"solver exited with code {exc.returncode}"
             try:
-                episode = self._read_episode(case_dir)
+                episode = self._read_episode(case_dir, diverged=True)
             except Exception as read_error:
                 return None, EpisodeFailure(
                     index, case_dir, f"{reason}; no usable trajectory: {read_error}"
                 )
-            episode.attrs["diverged"] = True
             return episode, EpisodeFailure(index, case_dir, f"{reason}; partial kept")
 
-        episode = self._read_episode(case_dir)
-        episode.attrs["diverged"] = False
-        return episode, None
+        return self._read_episode(case_dir, diverged=False), None
 
-    def _read_episode(self, case_dir: Path) -> xr.Dataset:
+    def _read_episode(self, case_dir: Path, diverged: bool) -> xr.Dataset:
         trajectory = read_trajectory(case_dir, self.spec)
-        series = [read_function_object(case_dir, name) for name in self.function_objects]
-        data = attach(trajectory, *series)
-        data = data.assign(reward=("time", evaluate_reward(data, self.reward_fn)))
+        trajectory.attrs["diverged"] = diverged
+        # the solver diverged inside the interval of the last row it wrote
+        complete = trajectory.isel(time=slice(None, -1)) if diverged else trajectory
+
+        steps = []
+        if complete.sizes["time"]:
+            series = [
+                read_function_object(case_dir, *entry.split("/", 1))
+                for entry in self.function_objects
+            ]
+            data = attach(complete, *series)
+            steps.append(data.assign(reward=("time", evaluate_reward(data, self.reward_fn))))
+        if diverged and self.divergence_reward is not None:
+            failed = trajectory.isel(time=[-1])
+            steps.append(failed.assign(reward=("time", [float(self.divergence_reward)])))
+        if not steps:
+            raise ValueError("the solver diverged before completing a control step")
+
+        data = xr.concat(steps, dim="time")
         data.attrs["case_dir"] = str(case_dir)
         return data
 

@@ -158,10 +158,10 @@ def test_gaussian_graph_draws_without_bounding(spec, tmp_path):
     artifact = export_policy(net, spec, tmp_path / "policy.onnx")
     session = ort.InferenceSession(str(artifact.path), providers=["CPUExecutionProvider"])
 
-    obs = np.random.default_rng(0).normal(size=(4, spec.obs_dim)).astype(np.float32)
+    obs = np.random.default_rng(0).normal(size=(4, spec.obs_dim))
     high = spec.action.high[0]
     with torch.no_grad():
-        mean = net(torch.tensor(obs))[:, : spec.act_dim].numpy()
+        mean = net(torch.tensor(obs, dtype=torch.float32))[:, : spec.act_dim].numpy()
 
     at_zero = session.run(
         None, {"observation": obs, "noise": np.zeros((4, spec.act_dim), np.float32)}
@@ -211,7 +211,7 @@ def test_normalization_is_baked_into_the_graph(spec, tmp_path):
     )
     artifact = export_policy(net, spec, tmp_path / "policy.onnx", normalization=norm)
 
-    raw = np.random.default_rng(1).normal(10.0, 2.0, (8, spec.obs_dim)).astype(np.float32)
+    raw = np.random.default_rng(1).normal(10.0, 2.0, (8, spec.obs_dim))
     session = ort.InferenceSession(str(artifact.path), providers=["CPUExecutionProvider"])
     noise = np.zeros((8, spec.act_dim), np.float32)
     from_graph = session.run(None, {"observation": raw, "noise": noise})
@@ -222,6 +222,32 @@ def test_normalization_is_baked_into_the_graph(spec, tmp_path):
     expected_mean = head[:, : spec.act_dim]
 
     assert np.allclose(from_graph[0], expected_mean.numpy(), atol=1e-5)
+
+
+class FirstComponent(torch.nn.Module):
+    """An actor whose mean is the first normalized observation, with log_std 0."""
+
+    def forward(self, x):
+        return x[:, :1], torch.zeros_like(x[:, :1])
+
+
+def test_the_actor_sees_the_observation_the_buffer_uses(spec, tmp_path):
+    """An absolute pressure with small fluctuations, far from zero against its spread."""
+    norm = Normalization(mean=np.full(spec.obs_dim, 101325.37), std=np.full(spec.obs_dim, 0.01))
+    artifact = export_policy(FirstComponent(), spec, tmp_path / "policy.onnx", normalization=norm)
+    session = ort.InferenceSession(str(artifact.path), providers=["CPUExecutionProvider"])
+
+    raw = 101325.37 + 0.01 * np.random.default_rng(2).standard_normal((64, spec.obs_dim))
+    (seen,) = session.run(None, {"observation": raw, "noise": np.zeros((64, 1), np.float32)})
+
+    assert np.array_equal(seen[:, 0], norm.apply(raw)[:, 0].astype(np.float32))
+
+
+def test_the_normalization_cannot_change_after_the_export(spec, tmp_path):
+    artifact = export_random_policy(spec, tmp_path / "policy.onnx", seed=0)
+
+    with pytest.raises(ValueError, match="read-only"):
+        artifact.normalization.mean[0] = 1.0
 
 
 def test_artifact_reloads_from_the_onnx_file(spec, tmp_path):

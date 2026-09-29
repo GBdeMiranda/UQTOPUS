@@ -20,6 +20,7 @@ def build_rollout_buffer(
     *,
     gamma: float = 0.99,
     gae_lambda: float = 0.95,
+    truncated: bool = True,
 ) -> RolloutBuffer:
     """
     Build a filled RolloutBuffer, sized to the rollout, from collected episodes.
@@ -29,6 +30,10 @@ def build_rollout_buffer(
         policy: the stable-baselines3 policy that produced it, with the weights
             of the exported artifact.
         gamma, gae_lambda (float): discount and GAE parameters.
+        truncated (bool): True when the end of a run cuts the task short rather
+            than reaching a terminal state. The last row of each episode that
+            ran to the end then only supplies the state its return is
+            bootstrapped from. A diverged episode always ends terminal.
 
     Returns:
         RolloutBuffer, full, with advantages and returns computed.
@@ -47,8 +52,18 @@ def build_rollout_buffer(
     values = values.reshape(-1).cpu().numpy()
     log_probs = log_probs.reshape(-1).cpu().numpy()
 
+    keep = np.ones(rollout.n_steps, dtype=bool)
+    if truncated:
+        ends = np.cumsum(rollout.lengths) - 1
+        for end, length, episode in zip(ends, rollout.lengths, rollout.episodes):
+            if episode.attrs["diverged"]:
+                continue
+            keep[end] = False
+            if length > 1:
+                rewards[end - 1] += gamma * values[end]
+
     buffer = RolloutBuffer(
-        buffer_size=rollout.n_steps,
+        buffer_size=int(keep.sum()),
         observation_space=policy.observation_space,
         action_space=policy.action_space,
         device=device,
@@ -56,7 +71,7 @@ def build_rollout_buffer(
         gae_lambda=gae_lambda,
         n_envs=1,
     )
-    for i in range(rollout.n_steps):
+    for i in np.flatnonzero(keep):
         buffer.add(
             obs=observations[i].reshape(1, -1),
             action=actions[i].reshape(1, -1),
@@ -66,8 +81,7 @@ def build_rollout_buffer(
             log_prob=th.as_tensor(log_probs[i].reshape(1), device=device),
         )
 
-    # The observation following the last action is never logged, so the tail of
-    # each episode is treated as terminal rather than bootstrapped.
+    # Every episode ends terminal in the buffer
     buffer.compute_returns_and_advantage(
         last_values=th.zeros((1, 1), device=device),
         dones=np.ones(1, dtype=np.float32),

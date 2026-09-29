@@ -4,8 +4,8 @@ Class
 
 Description
     Policy read from an ONNX file and evaluated with ONNX Runtime. The graph
-    takes the observation and one standard normal draw per action component,
-    and returns the sampled action.
+    takes the observation in double precision and one standard normal draw per
+    action component in single precision, and returns the sampled action.
 
 SourceFiles
     onnxPolicy.C

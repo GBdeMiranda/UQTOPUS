@@ -5,6 +5,8 @@ Tests for the running statistics, the buffer fill and the PPO subclass.
 from __future__ import annotations
 
 import numpy as np
+import onnxruntime as ort
+import pytest
 import torch as th
 
 from uqtopus.rl import Normalization, export_random_policy
@@ -12,7 +14,7 @@ from uqtopus.rl.algos import PPO
 from uqtopus.rl.buffer import build_rollout_buffer, rollout_statistics
 from uqtopus.rl.export import RunningStatistics
 
-from conftest import N_STEPS
+from conftest import N_STEPS, make_runner
 
 # ---------------------------------------------------------------------------
 # running statistics
@@ -68,12 +70,13 @@ def test_buffer_is_full_and_carries_the_episode_boundaries(runner, spec, tmp_pat
     buffer = build_rollout_buffer(rollout, model.policy, gamma=0.99, gae_lambda=0.95)
 
     assert buffer.full
-    assert buffer.buffer_size == rollout.n_steps == 3 * N_STEPS
-    assert buffer.observations.shape == (rollout.n_steps, 1, spec.obs_dim)
+    # the last row of each episode only supplies the state to bootstrap from
+    assert buffer.buffer_size == rollout.n_steps - 3 == 3 * (N_STEPS - 1)
+    assert buffer.observations.shape == (buffer.buffer_size, 1, spec.obs_dim)
     assert np.all(np.isfinite(buffer.advantages))
     assert np.all(np.isfinite(buffer.returns))
     assert np.flatnonzero(buffer.episode_starts.ravel()).tolist() == [
-        0, N_STEPS, 2 * N_STEPS
+        0, N_STEPS - 1, 2 * (N_STEPS - 1)
     ]
 
 
@@ -88,7 +91,53 @@ def test_log_probs_are_recomputed_from_the_stored_actions(runner, tmp_path):
     with th.no_grad():
         _, expected, _ = model.policy.evaluate_actions(obs, act)
 
-    assert np.allclose(buffer.log_probs.ravel(), expected.numpy().ravel(), atol=1e-6)
+    assert np.allclose(buffer.log_probs.ravel(), expected.numpy().ravel()[:-1], atol=1e-6)
+
+
+@pytest.fixture
+def exact_critic(simulator, spec, tmp_path):
+    """
+    Three episodes with a reward of 1 at every step, and a model whose critic
+    returns the exact discounted value of that reward from any state.
+    """
+    runner = make_runner(simulator, spec, reward_fn=lambda ds: np.ones(ds.sizes["time"]))
+    model = PPO("MlpPolicy", runner, export_dir=tmp_path / "pol")
+    with th.no_grad():
+        model.policy.value_net.weight.zero_()
+        model.policy.value_net.bias.fill_(1.0 / (1.0 - model.gamma))
+    rollout = runner.collect(model.export_current_policy(tmp_path / "p.onnx"), n_episodes=3)
+    return model, rollout
+
+
+def test_a_truncated_episode_is_bootstrapped_from_its_last_row(exact_critic):
+    """With the exact value function, every advantage is zero."""
+    model, rollout = exact_critic
+    buffer = build_rollout_buffer(rollout, model.policy, gamma=model.gamma, gae_lambda=0.95)
+
+    assert np.allclose(buffer.advantages, 0.0, atol=1e-3)
+
+
+def test_a_terminal_end_charges_the_lost_future_to_the_last_step(exact_critic):
+    model, rollout = exact_critic
+    buffer = build_rollout_buffer(
+        rollout, model.policy, gamma=model.gamma, gae_lambda=0.95, truncated=False
+    )
+
+    last = np.cumsum(rollout.lengths) - 1
+    assert buffer.buffer_size == rollout.n_steps
+    assert np.allclose(buffer.advantages.ravel()[last], 1.0 - 1.0 / (1.0 - model.gamma), atol=1e-3)
+
+
+def test_a_diverged_episode_ends_terminal(exact_critic):
+    model, rollout = exact_critic
+    rollout.episodes[1].attrs["diverged"] = True
+    buffer = build_rollout_buffer(rollout, model.policy, gamma=model.gamma, gae_lambda=0.95)
+
+    first, diverged, third = np.split(buffer.advantages.ravel(), [N_STEPS - 1, 2 * N_STEPS - 1])
+    assert buffer.buffer_size == rollout.n_steps - 2
+    assert np.allclose(first, 0.0, atol=1e-3)
+    assert np.allclose(third, 0.0, atol=1e-3)
+    assert np.isclose(diverged[-1], 1.0 - 1.0 / (1.0 - model.gamma), atol=1e-3)
 
 
 def test_statistics_summarize_the_batch(runner, artifact):
@@ -106,6 +155,30 @@ def test_statistics_summarize_the_batch(runner, artifact):
 
 def test_the_actor_stays_on_the_cpu(runner, tmp_path):
     assert PPO("MlpPolicy", runner, export_dir=tmp_path / "pol").device.type == "cpu"
+
+
+@pytest.mark.parametrize("log_std", [-7.0, 3.0])
+def test_the_graph_draws_from_the_distribution_the_update_evaluates(
+    runner, spec, tmp_path, log_std
+):
+    """A unit draw moves the action by the standard deviation of the policy, narrow or wide."""
+    model = PPO("MlpPolicy", runner, export_dir=tmp_path / "pol")
+    with th.no_grad():
+        model.policy.log_std.fill_(log_std)
+    artifact = model.export_current_policy(tmp_path / "p.onnx")
+    session = ort.InferenceSession(str(artifact.path), providers=["CPUExecutionProvider"])
+
+    obs = np.random.default_rng(0).normal(size=(1, spec.obs_dim))
+    unit = np.ones((1, spec.act_dim), np.float32)
+    (at_zero,) = session.run(None, {"observation": obs, "noise": 0 * unit})
+    (at_one,) = session.run(None, {"observation": obs, "noise": unit})
+    with th.no_grad():
+        distribution = model.policy.get_distribution(
+            th.as_tensor(obs, dtype=th.float32)
+        ).distribution
+
+    assert np.allclose(at_zero, distribution.mean.numpy(), atol=1e-6)
+    assert np.allclose(at_one - at_zero, distribution.stddev.numpy(), rtol=1e-4)
 
 
 def test_a_full_training_loop_runs(runner, tmp_path):

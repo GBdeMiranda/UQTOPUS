@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from uqtopus import OpenFOAMSimulator
-from uqtopus.rl import export_random_policy
+from uqtopus.rl import export_random_policy, read_trajectory
 from uqtopus.rl.runner import ClosedLoopRunner
 
 from conftest import N_STEPS, fake_solver, make_runner, make_spec
@@ -29,6 +29,23 @@ def second_episode_fails(good, bad, case_dir, params):
 
 def refusing_launcher(case_dir, params):
     raise OSError("scheduler refused the job")
+
+
+def solver_with_probes(spec, case_dir, params):
+    """The fake solver, plus a probes functionObject writing one scalar and one vector field."""
+    fake_solver(spec)(case_dir, params)
+    root = case_dir / "postProcessing" / "probes" / "0"
+    root.mkdir(parents=True)
+    times = np.round(np.arange(1, N_STEPS * 40 + 1) * 0.01, 6)
+    header = "# Probe 0 (0.5 0 0.005)\n#       Probe     0\n#        Time\n"
+    (root / "p").write_text(header + "".join(f"{t:g} {2 * t:g}\n" for t in times))
+    (root / "U").write_text(header + "".join(f"{t:g} ({t:g} 0 0)\n" for t in times))
+
+
+def recording_reward(seen, ds):
+    """A zero reward, noting whether the run diverged and how many steps it was given."""
+    seen.append((ds.attrs["diverged"], ds.sizes["time"]))
+    return np.zeros(ds.sizes["time"])
 
 
 @pytest.fixture
@@ -92,6 +109,22 @@ def test_deterministic_collection_reaches_the_case(simulator, spec, artifact):
     assert "deterministic   yes;" in rendered[1]
 
 
+def test_one_file_of_a_function_object_is_chosen_by_name(simulator, spec, artifact):
+    runner = make_runner(
+        simulator,
+        spec,
+        partial(solver_with_probes, spec),
+        reward_fn=lambda ds: ds["0.x"].values,
+        function_objects=["probes/U"],
+    )
+    episode = runner.collect(artifact, n_episodes=1).episodes[0]
+
+    assert {"0.x", "0.y", "0.z"} <= set(episode.data_vars)
+    assert "0" not in episode.data_vars
+    # Ux equals the time, so each interval averages to its midpoint
+    assert np.allclose(episode["reward"].values, episode["time"].values - 0.2 + 0.005)
+
+
 def test_parallel_collection_matches_serial(coeff_runner, artifact):
     serial = coeff_runner.collect(artifact, n_episodes=4, n_jobs=1)
     parallel = coeff_runner.collect(artifact, n_episodes=4, n_jobs=4)
@@ -104,14 +137,59 @@ def test_parallel_collection_matches_serial(coeff_runner, artifact):
 # failures
 # ---------------------------------------------------------------------------
 
-def test_a_diverged_run_keeps_its_partial_trajectory(simulator, spec, artifact):
+def test_a_diverged_run_keeps_the_steps_it_completed(simulator, spec, artifact):
     runner = make_runner(simulator, spec, fake_solver(spec, fail_after=5))
     rollout = runner.collect(artifact, n_episodes=1)
 
-    assert rollout.n_steps == 5
+    # the fifth row was written when its interval began, which the solver never finished
+    assert rollout.n_steps == 4
     assert rollout.episodes[0].attrs["diverged"] is True
     assert len(rollout.failures) == 1
     assert "partial kept" in str(rollout.failures[0])
+
+
+@pytest.mark.parametrize("fail_after, expected", [(None, (False, N_STEPS)), (5, (True, 4))])
+def test_the_reward_function_sees_whether_the_run_diverged(
+    simulator, spec, artifact, fail_after, expected
+):
+    seen = []
+    solver = fake_solver(spec, fail_after=fail_after)
+    runner = make_runner(simulator, spec, solver, reward_fn=partial(recording_reward, seen))
+    runner.collect(artifact, n_episodes=1)
+
+    assert seen == [expected]
+
+
+def test_the_step_that_diverged_takes_the_divergence_reward(simulator, spec, artifact):
+    runner = make_runner(
+        simulator,
+        spec,
+        fake_solver(spec, fail_after=5),
+        reward_fn=lambda ds: -np.abs(ds["Cl"].values),
+        function_objects=["forceCoeffs"],
+        divergence_reward=-10.0,
+    )
+    episode = runner.collect(artifact, n_episodes=1).episodes[0]
+    written = read_trajectory(episode.attrs["case_dir"], spec)
+
+    assert episode.sizes["time"] == 5
+    assert np.array_equal(episode["action"].values, written["action"].values)
+    assert episode["reward"].values[-1] == -10.0
+    # no functionObject average exists for an interval the solver never finished
+    assert np.isnan(episode["Cl"].values[-1])
+    assert np.all(np.isfinite(episode["Cl"].values[:-1]))
+
+
+@pytest.mark.parametrize("divergence_reward, lengths", [(None, [N_STEPS]), (-10.0, [N_STEPS, 1])])
+def test_a_run_that_diverged_in_its_first_step(
+    simulator, spec, artifact, divergence_reward, lengths
+):
+    solver = partial(second_episode_fails, fake_solver(spec), fake_solver(spec, fail_after=1))
+    runner = make_runner(simulator, spec, solver, divergence_reward=divergence_reward)
+    rollout = runner.collect(artifact, n_episodes=2)
+
+    assert rollout.lengths == lengths
+    assert len(rollout.failures) == 1
 
 
 def test_one_bad_case_does_not_sink_the_batch(simulator, spec, artifact):
